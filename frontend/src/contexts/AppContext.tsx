@@ -270,28 +270,41 @@ function generateQuestion(number: number, type: string, topic: string): Question
 /**
  * Simulates AI tutor response
  */
-async function simulateAITutorResponse(message: string): Promise<string> {
-  await new Promise(resolve => setTimeout(resolve, 1000));
-  
-  const lowerMsg = message.toLowerCase();
-  
-  if (lowerMsg.includes('force') || lowerMsg.includes('vector')) {
-    return 'Forces are vector quantities with both magnitude and direction. To analyze forces, we break them into components using trigonometry. Would you like me to show you an example with specific values?';
+async function simulateAITutorResponse(message: string, model: string = "qwen"): Promise<string> {
+  try {
+    const response = await fetch("http://127.0.0.1:8000/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        message,
+        model,
+        role: "student",
+        conversation_history: [],
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error("Backend request failed");
+    }
+
+    const data = await response.json();
+    
+    // If SymPy verified the answer, append a note
+    if (data.sympy_verified && data.sympy_result) {
+      return data.response + `\n\n✓ *Answer verified by SymPy: ${
+        Array.isArray(data.sympy_result.solution) 
+          ? data.sympy_result.solution.join(", ") 
+          : data.sympy_result.solution
+      }*`;
+    }
+
+    return data.response;
+
+  } catch (error) {
+    return "Sorry, I couldn't connect to the AI backend. Make sure the server is running.";
   }
-  
-  if (lowerMsg.includes('thermo') || lowerMsg.includes('heat')) {
-    return 'Thermodynamics deals with energy transfer, particularly heat and work. The First Law states that energy is conserved: ΔU = Q - W. What specific topic would you like to explore?';
-  }
-  
-  if (lowerMsg.includes('equation') || lowerMsg.includes('formula')) {
-    return 'I can help you understand engineering equations! Please share the specific equation you\'re working with, and I\'ll explain each term and how to apply it.';
-  }
-  
-  if (lowerMsg.includes('stress') || lowerMsg.includes('strain')) {
-    return 'Stress (σ) is force per unit area: σ = F/A. Strain (ε) is deformation per unit length: ε = ΔL/L₀. They\'re related by Hooke\'s Law: σ = Eε, where E is Young\'s Modulus.';
-  }
-  
-  return 'That\'s an interesting question! I\'d be happy to help you explore this topic. Could you provide more context about what you\'re studying, or share a specific problem you\'re working on?';
 }
 
 // =============================================================================
@@ -470,8 +483,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // =============================================================================
 
   const sendMessageToAI = useCallback(async (conversationId: string, message: string) => {
-    const response = await simulateAITutorResponse(message);
-    
     const userMessage: ChatMessage = {
       id: `msg-${Date.now()}-user`,
       conversationId,
@@ -480,6 +491,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       content: message,
       timestamp: new Date(),
     };
+
+    // Add user message immediately
+    setConversations(prev => prev.map(conv => {
+      if (conv.id === conversationId) {
+        return {
+          ...conv,
+          messages: [...conv.messages, userMessage],
+          updatedAt: new Date(),
+        };
+      }
+      return conv;
+    }));
+
+    // Get AI response
+    const response = await simulateAITutorResponse(message);
     
     const aiMessage: ChatMessage = {
       id: `msg-${Date.now()}-ai`,
@@ -494,7 +520,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (conv.id === conversationId) {
         return {
           ...conv,
-          messages: [...conv.messages, userMessage, aiMessage],
+          messages: [...conv.messages, aiMessage],
           updatedAt: new Date(),
         };
       }
