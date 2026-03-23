@@ -34,6 +34,7 @@ import { AIContentGenerator } from '@/sections/professor/AIContentGenerator';
 import { AIQuizGenerator } from '@/sections/professor/AIQuizGenerator';
 import { StudentDashboard } from '@/sections/student/StudentDashboard';
 import { AITutor } from '@/sections/student/AITutor';
+import { UploadMaterials } from '@/sections/professor/UploadMaterials';
 import './App.css';
 
 // =============================================================================
@@ -137,6 +138,7 @@ function MainLayout() {
       courses: <CoursesView />,
       'ai-generator': <AIContentGenerator onViewChange={setCurrentView} />,
       'quiz-builder': <AIQuizGenerator onViewChange={setCurrentView} />,
+      'upload-materials': <UploadMaterials onViewChange={setCurrentView} />,
       analytics: <AnalyticsView />,
       gradebook: <GradebookView />,
       'ai-tutor': <AITutor onViewChange={setCurrentView} />,

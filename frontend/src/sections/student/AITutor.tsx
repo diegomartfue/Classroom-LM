@@ -222,23 +222,70 @@ export function AITutor({ onViewChange }: AITutorProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [activeConversation?.messages, isTyping]);
 
-  const handleSendMessage = async () => {
-    if (!inputMessage.trim() || !activeConversation) return;
+const handleSendMessage = async () => {
+  if (!inputMessage.trim() || !activeConversation) return;
 
-    const message = inputMessage.trim();
-    setInputMessage('');
-    setIsTyping(true);
+  const message = inputMessage.trim();
+  setInputMessage('');
 
-    // Send to AI
-    await sendMessageToAI(activeConversation.id, message);
-    
-    // Update local state
-    setConversations(prev => prev.map(conv => 
-      conv.id === activeConversation.id ? activeConversation : conv
-    ));
-    
-    setIsTyping(false);
+  // Add user message to UI immediately
+  const userMessage: ChatMessage = {
+    id: `msg-${Date.now()}`,
+    conversationId: activeConversation.id,
+    sender: 'user',
+    type: 'text',
+    content: message,
+    timestamp: new Date(),
   };
+
+  setActiveConversation(prev => prev ? {
+    ...prev,
+    messages: [...prev.messages, userMessage],
+  } : null);
+
+  setIsTyping(true);
+
+  try {
+    const response = await fetch('http://localhost:8000/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: message }),
+    });
+
+    const data = await response.json();
+
+    const aiMessage: ChatMessage = {
+      id: `msg-${Date.now()}-ai`,
+      conversationId: activeConversation.id,
+      sender: 'ai',
+      type: 'text',
+      content: data.status === 'success' ? data.answer : 'Sorry, something went wrong.',
+      timestamp: new Date(),
+    };
+
+    setActiveConversation(prev => prev ? {
+      ...prev,
+      messages: [...prev.messages, aiMessage],
+    } : null);
+
+  } catch {
+    const errorMessage: ChatMessage = {
+      id: `msg-${Date.now()}-err`,
+      conversationId: activeConversation.id,
+      sender: 'ai',
+      type: 'text',
+      content: 'Could not connect to backend. Is it running?',
+      timestamp: new Date(),
+    };
+
+    setActiveConversation(prev => prev ? {
+      ...prev,
+      messages: [...prev.messages, errorMessage],
+    } : null);
+  }
+
+  setIsTyping(false);
+};
 
   const handleNewConversation = () => {
     const newConv: Conversation = {
