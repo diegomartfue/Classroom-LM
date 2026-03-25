@@ -224,14 +224,36 @@ export function AITutor({ onViewChange }: AITutorProps) {
   }, [activeConversation?.messages, isTyping]);
 
 const handleSendMessage = async () => {
-    if (!inputMessage.trim() || !activeConversationId) return;
-    const message = inputMessage.trim();
-    setInputMessage('');
-    setIsTyping(true);
-    await sendMessageToAI(activeConversationId, message);
-    setIsTyping(false);
-  };
+  if (!inputMessage.trim() || !activeConversationId) return;
 
+  const message = inputMessage.trim();
+  setInputMessage('');
+  setIsTyping(true);
+
+  try {
+    // First try RAG query (searches uploaded materials)
+    const ragResponse = await fetch('http://localhost:8000/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: message }),
+    });
+
+    const ragData = await ragResponse.json();
+
+    if (ragData.status === 'success' && ragData.answer) {
+      // RAG found something in uploaded materials
+      await sendMessageToAI(activeConversationId, message + `\n\n[Context from uploaded materials]: ${ragData.answer}`);
+    } else {
+      // No uploaded materials relevant, use regular Ollama chat
+      await sendMessageToAI(activeConversationId, message);
+    }
+  } catch {
+    // RAG endpoint not available, fall back to regular chat
+    await sendMessageToAI(activeConversationId, message);
+  }
+
+  setIsTyping(false);
+};
   const handleNewConversation = () => {
     const newConv = createConversation('New Conversation');
     setActiveConversationId(newConv.id);
