@@ -378,7 +378,7 @@ export function AIQuizGenerator({ onViewChange }: AIQuizGeneratorProps) {
                       >
                         <Checkbox
                           checked={selectedTypes.includes(type.type)}
-                          onCheckedChange={() => toggleQuestionType(type.type)}
+                          onCheckedChange={() => {}}
                         />
                         <type.icon className={cn(
                           'w-4 h-4',

@@ -35,66 +35,66 @@ import {
   ChevronLeft,
   MessageSquare,
 } from 'lucide-react';
-import type { ChatMessage, Conversation } from '@/types';
+import type { ChatMessage } from '@/types';
 
-// =============================================================================
-// MOCK CONVERSATIONS
-// =============================================================================
+// // =============================================================================
+// // MOCK CONVERSATIONS
+// // =============================================================================
 
-const MOCK_CONVERSATIONS: Conversation[] = [
-  {
-    id: 'conv-1',
-    userId: 'student-1',
-    title: 'Force Components Help',
-    messages: [
-      {
-        id: 'msg-1',
-        conversationId: 'conv-1',
-        sender: 'user',
-        type: 'text',
-        content: 'I\'m struggling with calculating force components. Can you explain?',
-        timestamp: new Date(Date.now() - 86400000),
-      },
-      {
-        id: 'msg-2',
-        conversationId: 'conv-1',
-        sender: 'ai',
-        type: 'text',
-        content: 'I\'d be happy to help! When a force acts at an angle, we break it into horizontal (x) and vertical (y) components using trigonometry.\n\nFor a force F at angle θ:\n• Horizontal: Fₓ = F × cos(θ)\n• Vertical: Fᵧ = F × sin(θ)\n\nWould you like to work through an example problem?',
-        timestamp: new Date(Date.now() - 86350000),
-      },
-    ],
-    createdAt: new Date(Date.now() - 86400000),
-    updatedAt: new Date(Date.now() - 86350000),
-    contextCourseId: 'course-1',
-  },
-  {
-    id: 'conv-2',
-    userId: 'student-1',
-    title: 'Thermodynamics Question',
-    messages: [
-      {
-        id: 'msg-3',
-        conversationId: 'conv-2',
-        sender: 'user',
-        type: 'text',
-        content: 'What is the First Law of Thermodynamics?',
-        timestamp: new Date(Date.now() - 172800000),
-      },
-      {
-        id: 'msg-4',
-        conversationId: 'conv-2',
-        sender: 'ai',
-        type: 'text',
-        content: 'The First Law of Thermodynamics states that energy cannot be created or destroyed, only transferred or converted from one form to another.\n\nMathematically: ΔU = Q - W\n\nWhere:\n• ΔU = change in internal energy\n• Q = heat added to the system\n• W = work done by the system',
-        timestamp: new Date(Date.now() - 172750000),
-      },
-    ],
-    createdAt: new Date(Date.now() - 172800000),
-    updatedAt: new Date(Date.now() - 172750000),
-    contextCourseId: 'course-2',
-  },
-];
+// const MOCK_CONVERSATIONS: Conversation[] = [
+//   {
+//     id: 'conv-1',
+//     userId: 'student-1',
+//     title: 'Force Components Help',
+//     messages: [
+//       {
+//         id: 'msg-1',
+//         conversationId: 'conv-1',
+//         sender: 'user',
+//         type: 'text',
+//         content: 'I\'m struggling with calculating force components. Can you explain?',
+//         timestamp: new Date(Date.now() - 86400000),
+//       },
+//       {
+//         id: 'msg-2',
+//         conversationId: 'conv-1',
+//         sender: 'ai',
+//         type: 'text',
+//         content: 'I\'d be happy to help! When a force acts at an angle, we break it into horizontal (x) and vertical (y) components using trigonometry.\n\nFor a force F at angle θ:\n• Horizontal: Fₓ = F × cos(θ)\n• Vertical: Fᵧ = F × sin(θ)\n\nWould you like to work through an example problem?',
+//         timestamp: new Date(Date.now() - 86350000),
+//       },
+//     ],
+//     createdAt: new Date(Date.now() - 86400000),
+//     updatedAt: new Date(Date.now() - 86350000),
+//     contextCourseId: 'course-1',
+//   },
+//   {
+//     id: 'conv-2',
+//     userId: 'student-1',
+//     title: 'Thermodynamics Question',
+//     messages: [
+//       {
+//         id: 'msg-3',
+//         conversationId: 'conv-2',
+//         sender: 'user',
+//         type: 'text',
+//         content: 'What is the First Law of Thermodynamics?',
+//         timestamp: new Date(Date.now() - 172800000),
+//       },
+//       {
+//         id: 'msg-4',
+//         conversationId: 'conv-2',
+//         sender: 'ai',
+//         type: 'text',
+//         content: 'The First Law of Thermodynamics states that energy cannot be created or destroyed, only transferred or converted from one form to another.\n\nMathematically: ΔU = Q - W\n\nWhere:\n• ΔU = change in internal energy\n• Q = heat added to the system\n• W = work done by the system',
+//         timestamp: new Date(Date.now() - 172750000),
+//       },
+//     ],
+//     createdAt: new Date(Date.now() - 172800000),
+//     updatedAt: new Date(Date.now() - 172750000),
+//     contextCourseId: 'course-2',
+//   },
+// ];
 
 // =============================================================================
 // SUGGESTED QUESTIONS
@@ -206,10 +206,11 @@ interface AITutorProps {
 
 export function AITutor({ onViewChange }: AITutorProps) {
   const { user } = useAuth();
-  const { sendMessageToAI } = useApp();
+  const { sendMessageToAI, conversations: appConversations, createConversation } = useApp();
   
-  const [conversations, setConversations] = useState<Conversation[]>(MOCK_CONVERSATIONS);
-  const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
+  const conversations = appConversations;
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const activeConversation = conversations.find(c => c.id === activeConversationId) ?? null;
   const [inputMessage, setInputMessage] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
@@ -222,35 +223,20 @@ export function AITutor({ onViewChange }: AITutorProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [activeConversation?.messages, isTyping]);
 
+
   const handleSendMessage = async () => {
-    if (!inputMessage.trim() || !activeConversation) return;
+    if (!inputMessage.trim() || !activeConversationId) return;
 
     const message = inputMessage.trim();
     setInputMessage('');
     setIsTyping(true);
-
-    // Send to AI
-    await sendMessageToAI(activeConversation.id, message);
-    
-    // Update local state
-    setConversations(prev => prev.map(conv => 
-      conv.id === activeConversation.id ? activeConversation : conv
-    ));
-    
+    await sendMessageToAI(activeConversationId, message);
     setIsTyping(false);
   };
 
   const handleNewConversation = () => {
-    const newConv: Conversation = {
-      id: `conv-${Date.now()}`,
-      userId: user?.id || '',
-      title: 'New Conversation',
-      messages: [],
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-    setConversations(prev => [newConv, ...prev]);
-    setActiveConversation(newConv);
+    const newConv = createConversation('New Conversation');
+    setActiveConversationId(newConv.id);
   };
 
   const handleImageUpload = () => {
@@ -259,45 +245,9 @@ export function AITutor({ onViewChange }: AITutorProps) {
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file && activeConversation) {
-      // In a real app, upload the file and get URL
+    if (file && activeConversationId) {
       const imageUrl = URL.createObjectURL(file);
-      
-      const userMessage: ChatMessage = {
-        id: `msg-${Date.now()}`,
-        conversationId: activeConversation.id,
-        sender: 'user',
-        type: 'diagram',
-        content: 'Can you analyze this diagram?',
-        imageUrl,
-        timestamp: new Date(),
-      };
-      
-      setActiveConversation(prev => prev ? {
-        ...prev,
-        messages: [...prev.messages, userMessage],
-        updatedAt: new Date(),
-      } : null);
-      
-      // Simulate AI response
-      setIsTyping(true);
-      setTimeout(() => {
-        const aiMessage: ChatMessage = {
-          id: `msg-${Date.now()}-ai`,
-          conversationId: activeConversation.id,
-          sender: 'ai',
-          type: 'text',
-          content: 'I can see this diagram. It appears to show a mechanical system with forces acting on it. Let me analyze the key components...',
-          timestamp: new Date(),
-        };
-        
-        setActiveConversation(prev => prev ? {
-          ...prev,
-          messages: [...prev.messages, aiMessage],
-          updatedAt: new Date(),
-        } : null);
-        setIsTyping(false);
-      }, 1500);
+      sendMessageToAI(activeConversationId, `[Image uploaded] Can you analyze this diagram?`);
     }
   };
 
@@ -327,10 +277,10 @@ export function AITutor({ onViewChange }: AITutorProps) {
               {conversations.map((conv) => (
                 <button
                   key={conv.id}
-                  onClick={() => setActiveConversation(conv)}
+                  onClick={() => setActiveConversationId(conv.id)}
                   className={cn(
                     'w-full text-left p-3 rounded-xl transition-all',
-                    activeConversation?.id === conv.id
+                    activeConversationId === conv.id
                       ? 'bg-indigo-100 text-indigo-900'
                       : 'hover:bg-slate-100 text-slate-700'
                   )}

@@ -72,7 +72,7 @@ function RichTextEditor({ content, onChange }: RichTextEditorProps) {
   };
 
   return (
-    <div className="border rounded-xl overflow-hidden bg-white">
+    <div className="relative border rounded-xl overflow-hidden bg-white">
       {/* Toolbar */}
       <div className="flex items-center gap-1 p-2 border-b bg-slate-50">
         <Button variant="ghost" size="sm" className="h-8 px-2 font-bold">B</Button>

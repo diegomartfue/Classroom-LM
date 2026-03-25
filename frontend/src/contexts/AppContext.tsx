@@ -270,18 +270,21 @@ function generateQuestion(number: number, type: string, topic: string): Question
 /**
  * Simulates AI tutor response
  */
-async function simulateAITutorResponse(message: string, model: string = "qwen"): Promise<string> {
+async function simulateAITutorResponse(
+  message: string, 
+  model: string = "qwen",
+  conversationHistory: { role: string; content: string }[] = []
+): Promise<string> {
   try {
     const response = await fetch("http://127.0.0.1:8000/chat", {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
-      },
+        "Content-Type": "application/json"},
       body: JSON.stringify({
         message,
         model,
         role: "student",
-        conversation_history: [],
+        conversation_history: conversationHistory,
       }),
     });
 
@@ -504,31 +507,34 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return conv;
     }));
 
-    // Get AI response
-    const response = await simulateAITutorResponse(message);
+
+    // Build history from existing messages (before the new user message)
+  const conversation = conversations.find(c => c.id === conversationId);
+  const history = (conversation?.messages ?? []).map(m => ({
+    role: m.sender === 'user' ? 'user' : 'assistant',
+    content: m.content,
+  }));
     
-    const aiMessage: ChatMessage = {
-      id: `msg-${Date.now()}-ai`,
-      conversationId,
-      sender: 'ai',
-      type: 'text',
-      content: response,
-      timestamp: new Date(),
-    };
-    
-    setConversations(prev => prev.map(conv => {
-      if (conv.id === conversationId) {
-        return {
-          ...conv,
-          messages: [...conv.messages, aiMessage],
-          updatedAt: new Date(),
-        };
-      }
-      return conv;
-    }));
-    
-    return aiMessage;
-  }, []);
+  const response = await simulateAITutorResponse(message, "qwen", history);
+
+  const aiMessage: ChatMessage = {
+    id: `msg-${Date.now()}-ai`,
+    conversationId,
+    sender: 'ai',
+    type: 'text',
+    content: response,
+    timestamp: new Date(),
+  };
+
+  setConversations(prev => prev.map(conv => {
+    if (conv.id === conversationId) {
+      return { ...conv, messages: [...conv.messages, aiMessage], updatedAt: new Date() };
+    }
+    return conv;
+  }));
+
+  return aiMessage;
+}, [conversations]);  
 
   const createConversation = useCallback((title: string, courseId?: string) => {
     const newConversation: Conversation = {
