@@ -2,9 +2,11 @@
 ClassroomLM Backend - FastAPI Server
 Handles AI tutoring requests with Ollama + SymPy verification.
 """
-
-from fastapi import FastAPI
+import shutil
+import os
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from rag_pipeline import ingest_document, query_rag
 from pydantic import BaseModel
 from ollama_client import chat, is_ollama_running, get_available_models
 from sympy_solver import extract_and_solve
@@ -35,6 +37,9 @@ class ChatResponse(BaseModel):
     model_used: str
     sympy_result: dict | None = None
     sympy_verified: bool = False
+    
+class QueryRequest(BaseModel):
+    question: str
 
 # =============================================================================
 # ROUTES
@@ -95,3 +100,23 @@ Use this verified answer in your explanation. SymPy has confirmed this is correc
         sympy_result=sympy_result,
         sympy_verified=sympy_result is not None
     )
+
+
+@app.post("/upload")
+async def upload_endpoint(file: UploadFile = File(...)):
+    temp_path = f"temp_{file.filename}"
+    try:
+        with open(temp_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        result = ingest_document(temp_path)
+        return result
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+@app.post("/query")
+def query_endpoint(request: QueryRequest):
+    return query_rag(request.question)

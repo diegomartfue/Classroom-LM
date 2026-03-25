@@ -33,6 +33,7 @@ import {
   GraduationCap,
   BarChart3,
   Zap,
+  Upload,
 } from 'lucide-react';
 
 // =============================================================================
@@ -303,6 +304,14 @@ export function ProfessorDashboard({ onViewChange }: ProfessorDashboardProps) {
               color="bg-gradient-to-br from-pink-500 to-pink-600"
               onClick={() => onViewChange('ai-tutor')}
               delay={800}
+            />
+            <AIToolCard
+              title="Upload Course Materials"
+              description="Upload PDFs to give the AI tutor access to your course content."
+              icon={Upload}
+              color="bg-gradient-to-br from-emerald-500 to-emerald-600"
+              onClick={() => onViewChange('upload-materials')}
+              delay={900}
             />
           </div>
 

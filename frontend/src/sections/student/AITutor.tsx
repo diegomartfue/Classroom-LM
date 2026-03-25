@@ -223,10 +223,8 @@ export function AITutor({ onViewChange }: AITutorProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [activeConversation?.messages, isTyping]);
 
-
-  const handleSendMessage = async () => {
+const handleSendMessage = async () => {
     if (!inputMessage.trim() || !activeConversationId) return;
-
     const message = inputMessage.trim();
     setInputMessage('');
     setIsTyping(true);
