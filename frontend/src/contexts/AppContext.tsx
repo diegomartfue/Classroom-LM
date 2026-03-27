@@ -519,8 +519,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     content: m.content,
   }));
     
-  const response = await simulateAITutorResponse(message, "qwen", history);
+  // Route to DeepSeek for math/engineering problems, Qwen for general questions
+  const isMathProblem = /solve|equation|derivative|integral|calculate|proof|matrix|vector|force|stress|strain|momentum|energy/i.test(message);
+  const model = isMathProblem ? "deepseek" : "qwen";
 
+  const response = await simulateAITutorResponse(message, model, history);
   const aiMessage: ChatMessage = {
     id: `msg-${Date.now()}-ai`,
     conversationId,
