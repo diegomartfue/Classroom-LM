@@ -89,7 +89,7 @@ interface AppContextType {
   markNotificationRead: (id: string) => void;
   
   // AI Tutor
-  sendMessageToAI: (conversationId: string, message: string) => Promise<ChatMessage>;
+  sendMessageToAI: (conversationId: string, message: string, displayMessage?: string) => Promise<ChatMessage>;
   createConversation: (title: string, courseId?: string) => Conversation;
 }
 
@@ -485,13 +485,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // AI TUTOR
   // =============================================================================
 
-  const sendMessageToAI = useCallback(async (conversationId: string, message: string) => {
+  const sendMessageToAI = useCallback(async (
+    conversationId: string,
+    message: string,
+    displayMessage?: string
+  ) => {
     const userMessage: ChatMessage = {
       id: `msg-${Date.now()}-user`,
       conversationId,
       sender: 'user',
       type: 'text',
-      content: message,
+      content: displayMessage ?? message,
       timestamp: new Date(),
     };
 

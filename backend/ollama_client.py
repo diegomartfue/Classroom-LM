@@ -25,6 +25,7 @@ When solving equations:
 - Always show step-by-step work
 - Explain what each step means
 - Use clear notation
+- Do NOT use LaTeX syntax. Write all equations in plain text (e.g. write "x = 2" not "\\boxed{x = 2}", write "x^2" not "\\(x^2\\)").
 
 When you see a SymPy verified result included in the context, 
 always use that as the correct answer — it has been mathematically verified.
@@ -64,7 +65,7 @@ def chat(message: str, model_key: str = "qwen", conversation_history: list = [])
                 "messages": messages,
                 "stream": False,
             },
-            timeout=300  # 2 min timeout — DeepSeek can be slow
+            timeout=300  # 5 min timeout — DeepSeek can be slow
         )
         response.raise_for_status()
         data = response.json()
