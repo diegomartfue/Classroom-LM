@@ -90,6 +90,7 @@ interface AppContextType {
   
   // AI Tutor
   sendMessageToAI: (conversationId: string, message: string, displayMessage?: string) => Promise<ChatMessage>;
+  addRAGResponse: (conversationId: string, userMessage: string, aiAnswer: string) => void;
   createConversation: (title: string, courseId?: string) => Conversation;
 }
 
@@ -512,6 +513,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }));
 
 
+
+
+
     // Build history from existing messages (before the new user message)
   const conversation = conversations.find(c => c.id === conversationId);
   const history = (conversation?.messages ?? []).map(m => ({
@@ -538,7 +542,35 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }));
 
   return aiMessage;
-}, [conversations]);  
+}, [conversations]);
+
+
+
+
+
+  const addRAGResponse = useCallback((conversationId: string, userMessage: string, aiAnswer: string) => {
+    const userMsg: ChatMessage = {
+      id: `msg-${Date.now()}-user`,
+      conversationId,
+      sender: 'user',
+      type: 'text',
+      content: userMessage,
+      timestamp: new Date(),
+    };
+    const aiMsg: ChatMessage = {
+      id: `msg-${Date.now()}-ai`,
+      conversationId,
+      sender: 'ai',
+      type: 'text',
+      content: aiAnswer,
+      timestamp: new Date(),
+    };
+    setConversations(prev => prev.map(conv =>
+      conv.id === conversationId
+        ? { ...conv, messages: [...conv.messages, userMsg, aiMsg], updatedAt: new Date() }
+        : conv
+    ));
+  }, []);
 
   const createConversation = useCallback((title: string, courseId?: string) => {
     const newConversation: Conversation = {
@@ -584,6 +616,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     getCourseProgress,
     markNotificationRead,
     sendMessageToAI,
+    addRAGResponse,
     createConversation,
   }), [
     courses, modules, quizzes, progressRecords, notifications, conversations, isGenerating,
@@ -593,7 +626,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     generateAIModule, generateAIQuiz,
     getStudentProgress, getCourseProgress,
     markNotificationRead,
-    sendMessageToAI, createConversation,
+    sendMessageToAI, addRAGResponse, createConversation,
   ]);
 
   return (

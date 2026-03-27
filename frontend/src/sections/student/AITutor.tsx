@@ -206,7 +206,7 @@ interface AITutorProps {
 
 export function AITutor({ onViewChange }: AITutorProps) {
   const { user } = useAuth();
-  const { sendMessageToAI, conversations: appConversations, createConversation } = useApp();
+  const { sendMessageToAI, addRAGResponse, conversations: appConversations, createConversation } = useApp();
   
   const conversations = appConversations;
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -240,9 +240,9 @@ const handleSendMessage = async () => {
 
     const ragData = await ragResponse.json();
 
-    if (ragData.status === 'success' && ragData.answer) {
+    if (ragData.status === 'success' && ragData.answer && !ragData.answer.includes("I don't see that")) {
       // RAG found something in uploaded materials
-      await sendMessageToAI(activeConversationId, message + `\n\n[Context from uploaded materials]: ${ragData.answer}`);
+      addRAGResponse(activeConversationId, message, ragData.answer);
     } else {
       // No uploaded materials relevant, use regular Ollama chat
       await sendMessageToAI(activeConversationId, message);
