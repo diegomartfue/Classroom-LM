@@ -8,7 +8,7 @@ from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from rag_pipeline import ingest_document, query_rag
 from pydantic import BaseModel
-from ollama_client import chat, is_ollama_running, get_available_models
+from claude_client import chat
 from sympy_solver import extract_and_solve
 
 app = FastAPI()
@@ -52,11 +52,9 @@ def root():
 
 @app.get("/health")
 def health():
-    ollama_ok = is_ollama_running()
-    models = get_available_models()
+    api_key_set = bool(os.environ.get("ANTHROPIC_API_KEY"))
     return {
-        "ollama_running": ollama_ok,
-        "available_models": models,
+        "claude_api_configured": api_key_set,
     }
 
 
@@ -87,16 +85,12 @@ Answer: {', '.join(sympy_result['solution']) if isinstance(sympy_result['solutio
 
 Use this verified answer in your explanation. SymPy has confirmed this is correct."""
 
-    # Step 3 — Send to Ollama
-    response = chat(
-        message=augmented_message,
-        model_key=request.model,
-        conversation_history=request.conversation_history
-    )
+    # Step 3 — Send to Claude
+    response = chat(augmented_message, request.conversation_history)
 
     return ChatResponse(
         response=response,
-        model_used=request.model,
+        model_used="claude",
         sympy_result=sympy_result,
         sympy_verified=sympy_result is not None
     )

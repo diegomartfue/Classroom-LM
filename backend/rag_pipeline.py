@@ -1,9 +1,9 @@
 from pypdf import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import OllamaEmbeddings
 import chromadb
+import chromadb.utils.embedding_functions as embedding_functions
 
-from ollama_client import chat
+from claude_client import chat
 
 
 def ingest_document(file_path: str):
@@ -24,18 +24,14 @@ def ingest_document(file_path: str):
 
         chunks = splitter.split_text(text)
 
-        #embeddings
-        embeddings = OllamaEmbeddings(model='nomic-embed-text') #embedding model running locally through Ollama
-        vectors = embeddings.embed_documents(chunks)
-
         #store in ChromaDB
+        ef = embedding_functions.DefaultEmbeddingFunction()
         client = chromadb.PersistentClient(path="chroma_db") #saves to disc in a folder called chroma_db
-        collection = client.get_or_create_collection(name = "professor_materials") 
+        collection = client.get_or_create_collection(name="professor_materials", embedding_function=ef)
 
-        collection.upsert ( #stores chunks
-            ids = [str(i) for i in range(len(chunks))],
-            documents = chunks,
-            embeddings = vectors,
+        collection.upsert( #stores chunks
+            ids=[str(i) for i in range(len(chunks))],
+            documents=chunks,
         )
         
         return {"status": "success", "chunks_stored": len(chunks)}
@@ -45,16 +41,13 @@ def ingest_document(file_path: str):
         
 def query_rag(user_input: str):
     try:
+        ef = embedding_functions.DefaultEmbeddingFunction()
         client = chromadb.PersistentClient(path="chroma_db")
-        collection = client.get_or_create_collection(name="professor_materials")
-        
-        #embedd the question
-        embeddings = OllamaEmbeddings(model='nomic-embed-text')
-        vectors = embeddings.embed_query(user_input)
-        
+        collection = client.get_or_create_collection(name="professor_materials", embedding_function=ef)
+
         #search chromadb
         results = collection.query(
-            query_embeddings=[vectors],
+            query_texts=[user_input],
             n_results=3
         )
         
