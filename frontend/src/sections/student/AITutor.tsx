@@ -241,10 +241,9 @@ const handleSendMessage = async () => {
     const ragData = await ragResponse.json();
 
     if (ragData.status === 'success' && ragData.answer) {
-      // RAG found something in uploaded materials
-      await sendMessageToAI(activeConversationId, message + `\n\n[Context from uploaded materials]: ${ragData.answer}`);
+      const augmented = message + `\n\n[Context from uploaded materials]: ${ragData.answer}`;
+      await sendMessageToAI(activeConversationId, augmented, message);
     } else {
-      // No uploaded materials relevant, use regular Ollama chat
       await sendMessageToAI(activeConversationId, message);
     }
   } catch {

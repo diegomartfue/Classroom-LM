@@ -23,7 +23,7 @@ When solving equations:
 - Do NOT use LaTeX syntax. Write all equations in plain text (e.g. write "x = 2" not "\\boxed{x = 2}", write "x^2" not "\\(x^2\\)").
 
 When you see a SymPy verified result included in the context,
-always use that as the correct answer — it has been mathematically verified.
+always use that as the correct answer -- it has been mathematically verified.
 
 Be encouraging, clear, and thorough in your explanations."""
 
@@ -48,14 +48,14 @@ def chat(message: str, conversation_history: list = []) -> str:
     # Build messages array from history, then append current message
     messages = []
     for msg in conversation_history:
-        messages.append({"role": msg["role"], "content": msg["content"]})
-    messages.append({"role": "user", "content": message})
+        messages.append({"role": msg["role"], "content": msg["content"].encode('ascii', 'ignore').decode('ascii')})
+    messages.append({"role": "user", "content": message.encode('ascii', 'ignore').decode('ascii')})
 
     try:
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=4096,
-            system=SYSTEM_PROMPT,
+            system=SYSTEM_PROMPT.encode('ascii', 'ignore').decode('ascii'),
             messages=messages,
         )
         return response.content[0].text
