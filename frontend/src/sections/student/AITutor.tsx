@@ -17,6 +17,7 @@
  */
 
 import { useState, useRef, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
 import { cn } from '@/lib/utils';
 import { useAuth, useApp } from '@/contexts';
 import { Button } from '@/components/ui/button';
@@ -160,9 +161,11 @@ function MessageBubble({ message }: MessageBubbleProps) {
               />
             )}
             
-            <p className={cn('text-sm whitespace-pre-wrap', isUser ? 'text-white' : 'text-slate-700')}>
-              {message.content}
-            </p>
+            {isUser ? (
+              <p className="text-sm whitespace-pre-wrap text-white">{message.content}</p>
+            ) : (
+              <ReactMarkdown>{message.content}</ReactMarkdown>
+            )}
           </CardContent>
         </Card>
         <span className="text-xs text-slate-400 mt-1">
