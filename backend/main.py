@@ -4,6 +4,7 @@ Handles AI tutoring requests with Ollama + SymPy verification.
 """
 import shutil
 import os
+import base64
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from rag_pipeline import ingest_document, query_rag
@@ -94,6 +95,88 @@ Use this verified answer in your explanation. SymPy has confirmed this is correc
         sympy_result=sympy_result,
         sympy_verified=sympy_result is not None
     )
+
+
+@app.post("/interpret")
+async def interpret_endpoint(file: UploadFile = File(...)):
+    import anthropic
+    filename = file.filename or ""
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+    try:
+        contents = await file.read()
+
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+
+        if ext in ("png", "jpg", "jpeg", "gif", "webp"):
+            media_type_map = {
+                "png": "image/png",
+                "jpg": "image/jpeg",
+                "jpeg": "image/jpeg",
+                "gif": "image/gif",
+                "webp": "image/webp",
+            }
+            b64 = base64.standard_b64encode(contents).decode("utf-8")
+            response = client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=1024,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type_map[ext],
+                                "data": b64,
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": "Extract all equations, variables, and diagrams from this image. Describe them in plain text.",
+                        },
+                    ],
+                }],
+            )
+            extracted_text = response.content[0].text
+
+        elif ext == "pdf":
+            from pypdf import PdfReader
+            import io
+            reader = PdfReader(io.BytesIO(contents))
+            text = "\n".join(page.extract_text() or "" for page in reader.pages)
+            response = client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=1024,
+                messages=[{
+                    "role": "user",
+                    "content": f"Extract all equations, variables, and diagrams from the following document text. Describe them in plain text.\n\n{text}",
+                }],
+            )
+            extracted_text = response.content[0].text
+
+        elif ext in ("docx", "doc"):
+            from docx import Document
+            import io
+            doc = Document(io.BytesIO(contents))
+            text = "\n".join(para.text for para in doc.paragraphs)
+            response = client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=1024,
+                messages=[{
+                    "role": "user",
+                    "content": f"Extract all equations, variables, and diagrams from the following document text. Describe them in plain text.\n\n{text}",
+                }],
+            )
+            extracted_text = response.content[0].text
+
+        else:
+            return {"status": "error", "message": "Unsupported file type"}
+
+        return {"status": "success", "extracted_text": extracted_text}
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 @app.post("/upload")

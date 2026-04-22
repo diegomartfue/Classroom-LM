@@ -35,6 +35,7 @@ import {
   Loader2,
   ChevronLeft,
   MessageSquare,
+  X,
 } from 'lucide-react';
 import type { ChatMessage } from '@/types';
 
@@ -217,6 +218,8 @@ export function AITutor({ onViewChange }: AITutorProps) {
   const [inputMessage, setInputMessage] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
+  const [pendingImage, setPendingImage] = useState<string | null>(null);
+  const [pendingExtractedText, setPendingExtractedText] = useState<string>('');
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -229,8 +232,15 @@ export function AITutor({ onViewChange }: AITutorProps) {
 const handleSendMessage = async () => {
   if (!inputMessage.trim() || !activeConversationId) return;
 
-  const message = inputMessage.trim();
+  const typedMessage = inputMessage.trim();
+  const fullMessage = pendingExtractedText
+    ? `${typedMessage}\n\n[Extracted from uploaded file]:\n${pendingExtractedText}`
+    : typedMessage;
+  const imageUrl = pendingImage ?? undefined;
+
   setInputMessage('');
+  setPendingImage(null);
+  setPendingExtractedText('');
   setIsTyping(true);
 
   try {
@@ -238,20 +248,20 @@ const handleSendMessage = async () => {
     const ragResponse = await fetch('http://localhost:8000/query', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: message }),
+      body: JSON.stringify({ question: typedMessage }),
     });
 
     const ragData = await ragResponse.json();
 
     if (ragData.status === 'success' && ragData.answer) {
-      const augmented = message + `\n\n[Context from uploaded materials]: ${ragData.answer}`;
-      await sendMessageToAI(activeConversationId, augmented, message);
+      const augmented = fullMessage + `\n\n[Context from uploaded materials]: ${ragData.answer}`;
+      await sendMessageToAI(activeConversationId, augmented, typedMessage, imageUrl);
     } else {
-      await sendMessageToAI(activeConversationId, message);
+      await sendMessageToAI(activeConversationId, fullMessage, typedMessage, imageUrl);
     }
   } catch {
     // RAG endpoint not available, fall back to regular chat
-    await sendMessageToAI(activeConversationId, message);
+    await sendMessageToAI(activeConversationId, fullMessage, typedMessage, imageUrl);
   }
 
   setIsTyping(false);
@@ -265,12 +275,31 @@ const handleSendMessage = async () => {
     fileInputRef.current?.click();
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file && activeConversationId) {
-      const imageUrl = URL.createObjectURL(file);
-      sendMessageToAI(activeConversationId, `[Image uploaded] Can you analyze this diagram?`);
+    if (!file) return;
+
+    const objectUrl = URL.createObjectURL(file);
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const res = await fetch('http://localhost:8000/interpret', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json();
+      if (data.status === 'success') {
+        setPendingImage(objectUrl);
+        setPendingExtractedText(data.extracted_text);
+      }
+    } catch {
+      // If interpret fails, still show the image without extracted text
+      setPendingImage(objectUrl);
     }
+
+    // Reset file input so same file can be re-selected
+    e.target.value = '';
   };
 
   return (
@@ -393,6 +422,21 @@ const handleSendMessage = async () => {
             {/* Input Area */}
             <div className="p-4 border-t bg-slate-50">
               <div className="max-w-3xl mx-auto">
+                {pendingImage && (
+                  <div className="relative inline-block mb-2">
+                    <img
+                      src={pendingImage}
+                      alt="Pending upload"
+                      className="h-20 rounded-lg border border-slate-200 object-cover"
+                    />
+                    <button
+                      className="absolute -top-2 -right-2 bg-slate-700 text-white rounded-full w-5 h-5 flex items-center justify-center"
+                      onClick={() => { setPendingImage(null); setPendingExtractedText(''); }}
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                )}
                 <div className="flex items-end gap-2">
                   <div className="flex-1 relative">
                     <Textarea
@@ -419,7 +463,7 @@ const handleSendMessage = async () => {
                       <input
                         ref={fileInputRef}
                         type="file"
-                        accept="image/*"
+                        accept="image/*,.pdf,.docx,.doc"
                         className="hidden"
                         onChange={handleFileChange}
                       />
