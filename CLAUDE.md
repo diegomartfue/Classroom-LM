@@ -63,3 +63,36 @@ npm run lint
 1. Create the component in the appropriate `sections/` subdirectory.
 2. Import it in `App.tsx` and add it to the `views` object inside `MainLayout`.
 3. Add the corresponding nav item in `sections/shared/Sidebar.tsx`.
+
+# Dynamics Tutor Project
+
+## Scope (MVP)
+2D rigid body statics only. Specifically:
+- Single rigid body in planar equilibrium
+- Standard supports: pin, roller, fixed, cable, contact
+- Applied loads: point forces, point moments, distributed loads (uniform and linear)
+- Unknowns: reaction forces, reaction moments, geometric parameters
+- OUT OF SCOPE for MVP: trusses, frames, machines, friction problems, dynamics (ma, Iα), 3D problems, deformable bodies.
+- Input: structured text description only for v1. Image input in v2.
+
+## Architecture
+Seven agents: Conversationalist, Input Parser, Student Modeler, Pedagogical Planner, Solver, Validator, Visualizer.
+See docs/architecture.md for details.
+
+## Repo layout
+- /agents - prompts and agent Python wrappers
+- /tools - SymPy solver, unit checker, plot generator
+- /evals - problem sets and grading harness
+- /traces - saved runs for debugging
+- /state - student model storage
+
+## Running evals
+`python -m evals.run --suite projectile_v1`
+
+## Conventions
+- All prompts live in /agents/{name}/prompt.md (version controlled)
+- All agent calls log to /traces/{session_id}/{turn}.json
+- Temperature and model are set in /agents/{name}/config.yaml
+
+## Known misconceptions to track
+See /docs/misconceptions.md
