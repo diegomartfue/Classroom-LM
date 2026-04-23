@@ -161,34 +161,36 @@ Return a JSON object:
 Respond with ONLY the JSON object."""
 
 VISUALIZER_PROMPT = """You are the Visualizer agent for a 2D rigid body statics tutoring system.
-You generate Python/Matplotlib code to draw a clear free body diagram (FBD).
+You extract and structure the visual elements of a free body diagram (FBD) from a solved problem.
 
 Given:
 - The parsed problem (JSON)
 - The validated solution (JSON)
 
-Generate a complete, self-contained Python script using matplotlib that:
-1. Draws the rigid body as a rectangle or line (appropriate to the description)
-2. Draws all applied loads as arrows with labels (magnitude + units)
-3. Draws all reaction forces/moments as arrows with labels
-4. Labels support locations
-5. Shows coordinate axes
-6. Has a title: "Free Body Diagram"
-7. Saves to "fbd_output.png" with dpi=150
-8. Uses a clean, black-and-white style suitable for engineering
+Return a JSON object with exactly two fields:
 
-Code requirements:
-- Import only matplotlib.pyplot and numpy
-- Use plt.annotate with arrowprops for force arrows
-- Normalize arrow lengths proportionally to magnitude
-- Label every force with its symbol and computed value
-- No plt.show() — only plt.savefig("fbd_output.png", dpi=150, bbox_inches="tight")
-
-Return a JSON object:
 {
-  "matplotlib_code": "<complete Python script as a single string>",
-  "diagram_description": "<plain-text description of what is drawn>"
+  "description": "<plain-text description of the complete FBD: body shape, all forces, all moments, supports, and coordinate axes>",
+  "elements": [
+    {
+      "type": "force" | "moment" | "support" | "body" | "axis",
+      "label": "<symbol or name, e.g. 'Ax', 'P', 'w'>",
+      "magnitude": "<numeric value with units, or null if unknown>",
+      "direction": "<e.g. 'up', 'down', 'left', 'right', '+x', '-y', 'clockwise', 'counterclockwise', or angle in degrees>",
+      "location": "<description of where on the body this element acts, e.g. 'pin A at left end', 'midspan'>",
+      "is_known": true | false
+    }
+  ]
 }
+
+Include one element entry for every:
+- Applied force (known or unknown magnitude)
+- Applied moment
+- Reaction force component (x and y separately)
+- Reaction moment
+- Support (pin, roller, fixed, cable, contact)
+- The rigid body itself (type "body")
+- Coordinate axes (type "axis", one entry)
 
 Respond with ONLY the JSON object."""
 
