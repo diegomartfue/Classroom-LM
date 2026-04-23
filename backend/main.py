@@ -11,6 +11,7 @@ from rag_pipeline import ingest_document, query_rag
 from pydantic import BaseModel
 from claude_client import chat
 from sympy_solver import extract_and_solve
+from agents.orchestrator import OrchestratorAgent
 
 app = FastAPI()
 
@@ -41,6 +42,17 @@ class ChatResponse(BaseModel):
     
 class QueryRequest(BaseModel):
     question: str
+
+class TutorRequest(BaseModel):
+    message: str
+    conversation_history: list = []
+    student_model: dict = {}
+
+class TutorResponse(BaseModel):
+    response: str
+    decision: str
+    student_model: dict
+    metadata: dict
 
 # =============================================================================
 # ROUTES
@@ -197,3 +209,21 @@ async def upload_endpoint(file: UploadFile = File(...)):
 @app.post("/query")
 def query_endpoint(request: QueryRequest):
     return query_rag(request.question)
+
+
+@app.post("/tutor", response_model=TutorResponse)
+def tutor_endpoint(request: TutorRequest):
+    agent = OrchestratorAgent()
+    result = agent.run(request.message, request.conversation_history, request.student_model)
+    return TutorResponse(
+        response=result["response"],
+        decision=result["plan"].get("action", "UNKNOWN"),
+        student_model=result["updated_student_model"],
+        metadata={
+            "parsed_input": result["parsed_input"],
+            "plan": result["plan"],
+            "solution": result["solution"],
+            "validation": result["validation"],
+            "visualization": result["visualization"],
+        },
+    )
