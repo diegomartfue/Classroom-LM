@@ -218,7 +218,7 @@ def tutor_endpoint(request: TutorRequest):
     result = agent.run(request.message, request.conversation_history, request.student_model)
     return TutorResponse(
         response=result["response"],
-        decision=result["plan"].get("action", "UNKNOWN"),
+        decision=result["plan"].get("decision", result["plan"].get("action", "UNKNOWN")),
         student_model=result["updated_student_model"],
         diagram_image=result.get("diagram_image", ""),
         metadata={

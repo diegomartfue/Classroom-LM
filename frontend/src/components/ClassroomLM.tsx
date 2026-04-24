@@ -40,6 +40,7 @@ export default function ClassroomLM() {
   const [activeId, setActiveId] = useState<string>('seed-1');
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [studentModel, setStudentModel] = useState<object>({});
 
   const active = conversations.find(c => c.id === activeId);
   const messages = active?.messages ?? [];
@@ -94,23 +95,26 @@ export default function ClassroomLM() {
     setIsLoading(true);
 
     try {
-      // Route: RAG endpoint for document-grounded queries.
-      // Your backend's /query handler returns {answer, sources, route}
+      const currentMessages = conversations.find(c => c.id === activeId)?.messages ?? [];
       const res = await fetch(`${API_BASE}/tutor`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: text,
-          conversation_history: messages.map(m => ({
+          conversation_history: currentMessages.map(m => ({
             role: m.role === 'ai' ? 'assistant' : 'user',
-            content: m.content
+            content: m.content,
           })),
-          student_model: {}
+          student_model: studentModel,
         }),
       });
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+
+      if (data.student_model) {
+        setStudentModel(data.student_model);
+      }
 
       const aiMsg: Message = {
         id: `m-${Date.now()}-ai`,
@@ -229,7 +233,7 @@ export default function ClassroomLM() {
           </div>
           <div className="clm-mode-pill">
             <span className="clm-mode-dot" />
-            Qwen 2.5 · RAG ready
+            Claude Sonnet · RAG ready
           </div>
         </div>
 
@@ -291,10 +295,10 @@ export default function ClassroomLM() {
 // ==================== Subcomponents ====================
 function WelcomeScreen({ onPick }: { onPick: (text: string) => void }) {
   const suggestions = [
-    { label: 'Concept', text: 'Explain the difference between static and kinetic friction with an example.' },
-    { label: 'Problem', text: 'A 10 kg block on a 30° incline with μ = 0.2 — find the acceleration.' },
-    { label: 'Diagram', text: 'Draw a free-body diagram for a pulley system with two masses.' },
-    { label: 'Review', text: 'Quiz me on chapter 12 from the uploaded Hibbeler textbook.' },
+    { label: 'Concept', text: 'What reactions does a pin support provide versus a roller support?' },
+    { label: 'Problem', text: 'A 4m beam is pinned at A and has a roller at B. A 500N load acts at the midpoint. Find the reactions.' },
+    { label: 'FBD', text: 'How do I draw a free-body diagram for a beam with a distributed load?' },
+    { label: 'Review', text: 'Walk me through the steps to solve a 2D rigid body statics problem from scratch.' },
   ];
   return (
     <div className="clm-welcome">
