@@ -231,7 +231,7 @@ export default function ClassroomLM() {
           </div>
           <div className="clm-mode-pill">
             <span className="clm-mode-dot" />
-            Qwen 2.5 · RAG ready
+            Claude Sonnet · RAG ready
           </div>
         </div>
 
@@ -293,10 +293,10 @@ export default function ClassroomLM() {
 // ==================== Subcomponents ====================
 function WelcomeScreen({ onPick }: { onPick: (text: string) => void }) {
   const suggestions = [
-    { label: 'Concept', text: 'Explain the difference between static and kinetic friction with an example.' },
-    { label: 'Problem', text: 'A 10 kg block on a 30° incline with μ = 0.2 — find the acceleration.' },
-    { label: 'Diagram', text: 'Draw a free-body diagram for a pulley system with two masses.' },
-    { label: 'Review', text: 'Quiz me on chapter 12 from the uploaded Hibbeler textbook.' },
+    { label: 'Concept', text: 'What reactions does a pin support provide versus a roller support?' },
+    { label: 'Problem', text: 'A 4m beam is pinned at A and has a roller at B. A 500N load acts at the midpoint. Find the reactions.' },
+    { label: 'FBD', text: 'How do I draw a free-body diagram for a beam with a distributed load?' },
+    { label: 'Review', text: 'Walk me through the steps to solve a 2D rigid body statics problem from scratch.' },
   ];
   return (
     <div className="clm-welcome">
