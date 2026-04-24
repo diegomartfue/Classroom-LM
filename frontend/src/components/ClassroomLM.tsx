@@ -14,6 +14,7 @@ interface Message {
   content: string;
   source?: MessageSource;
   citations?: string[];
+  diagram?: string;
 }
 
 interface Conversation {
@@ -95,10 +96,17 @@ export default function ClassroomLM() {
     try {
       // Route: RAG endpoint for document-grounded queries.
       // Your backend's /query handler returns {answer, sources, route}
-      const res = await fetch(`${API_BASE}/query`, {
+      const res = await fetch(`${API_BASE}/tutor`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: text }),
+        body: JSON.stringify({
+          message: text,
+          conversation_history: messages.map(m => ({
+            role: m.role === 'ai' ? 'assistant' : 'user',
+            content: m.content
+          })),
+          student_model: {}
+        }),
       });
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -107,9 +115,10 @@ export default function ClassroomLM() {
       const aiMsg: Message = {
         id: `m-${Date.now()}-ai`,
         role: 'ai',
-        content: data.answer ?? '(no response)',
-        source: (data.route as MessageSource) ?? 'llm',
-        citations: data.sources ?? [],
+        content: data.response ?? '(no response)',
+        source: (data.decision?.toLowerCase() as MessageSource) ?? 'llm',
+        citations: [],
+        diagram: data.diagram_image || undefined,
       };
       updateActive(c => ({ ...c, messages: [...c.messages, aiMsg] }));
     } catch (err) {
@@ -334,13 +343,17 @@ function MessageView({ m }: { m: Message }) {
               .replace(/\n/g, '<br/>')
           }}
         />
-        {m.citations && m.citations.length > 0 && (
-          <div className="clm-citations">
-            <span>Sources used:</span>
-            {m.citations.map((c, i) => (
-              <span key={i} className="clm-citation-chip">📄 {c}</span>
-            ))}
-          </div>
+        {m.diagram && (
+          <img
+            src={`data:image/png;base64,${m.diagram}`}
+            alt="Free Body Diagram"
+            style={{
+              marginTop: '16px',
+              maxWidth: '100%',
+              borderRadius: '8px',
+              border: '1px solid rgba(15,15,15,0.08)',
+            }}
+          />
         )}
       </div>
     </div>
