@@ -39,6 +39,7 @@ export default function ClassroomLM() {
   const [activeId, setActiveId] = useState<string>('seed-1');
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [studentModel, setStudentModel] = useState<object>({});
 
   const active = conversations.find(c => c.id === activeId);
   const messages = active?.messages ?? [];
@@ -93,23 +94,33 @@ export default function ClassroomLM() {
     setIsLoading(true);
 
     try {
-      // Route: RAG endpoint for document-grounded queries.
-      // Your backend's /query handler returns {answer, sources, route}
-      const res = await fetch(`${API_BASE}/query`, {
+      const currentMessages = conversations.find(c => c.id === activeId)?.messages ?? [];
+      const res = await fetch(`${API_BASE}/tutor`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: text }),
+        body: JSON.stringify({
+          message: text,
+          conversation_history: currentMessages.map(m => ({
+            role: m.role === 'ai' ? 'assistant' : 'user',
+            content: m.content,
+          })),
+          student_model: studentModel,
+        }),
       });
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
 
+      if (data.student_model) {
+        setStudentModel(data.student_model);
+      }
+
       const aiMsg: Message = {
         id: `m-${Date.now()}-ai`,
         role: 'ai',
-        content: data.answer ?? '(no response)',
-        source: (data.route as MessageSource) ?? 'llm',
-        citations: data.sources ?? [],
+        content: data.response ?? '(no response)',
+        source: 'llm',
+        citations: [],
       };
       updateActive(c => ({ ...c, messages: [...c.messages, aiMsg] }));
     } catch (err) {
