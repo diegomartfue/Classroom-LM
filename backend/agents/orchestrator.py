@@ -24,13 +24,13 @@ load_dotenv()
 # System prompts
 # ---------------------------------------------------------------------------
 
-INPUT_PARSER_PROMPT = """You extract structured problem data from student descriptions of 2D rigid body statics problems.
+INPUT_PARSER_PROMPT = """You extract structured problem data from student descriptions of 2D rigid body statics and dynamics problems.
 
 INPUT: Raw student text (and possibly an image, if provided separately).
 OUTPUT: Strict JSON matching this schema:
 
 {
-  "problem_type": "rigid_body_statics" | "out_of_scope" | "unclear",
+  "problem_type": "rigid_body_statics" | "rigid_body_dynamics" | "out_of_scope" | "unclear",
   "body_description": "brief description of the body (e.g., 'horizontal beam AB, length 4m')",
   "geometry": {
     "body_type": "beam" | "bracket" | "lever" | "plate" | "other",
@@ -58,7 +58,17 @@ OUTPUT: Strict JSON matching this schema:
       "direction_description": "downward"
     }
   ],
-  "unknowns_requested": ["A_x", "A_y", "B_y"],
+  "dynamics": {
+    "mass_kg": 10.0 | null,
+    "moment_of_inertia_kg_m2": 2.5 | null,
+    "center_of_mass": {"x": 2.0, "y": 0.0} | null,
+    "initial_velocity_m_s": {"vx": 0.0, "vy": 0.0} | null,
+    "initial_angular_velocity_rad_s": 0.0 | null,
+    "acceleration_m_s2": {"ax": null, "ay": null},
+    "angular_acceleration_rad_s2": null,
+    "kinematic_constraints": ["string describing constraints if any"]
+  },
+  "unknowns_requested": ["A_x", "A_y", "alpha", "a_x"],
   "assumptions_stated": ["weightless beam", "rigid body"],
   "ambiguities": ["angle of force at C not specified"],
   "confidence": 0.0 to 1.0,
@@ -67,15 +77,16 @@ OUTPUT: Strict JSON matching this schema:
 
 RULES:
 - If confidence < 0.7, list specific ambiguities. Do not guess.
+- Use problem_type "rigid_body_dynamics" when the problem involves acceleration, angular acceleration, net force ≠ 0, or Newton's second law (F=ma, ΣM=Iα).
+- Use problem_type "rigid_body_statics" when the body is in equilibrium (ΣF=0, ΣM=0, no acceleration).
 - If the problem involves any of the following, return problem_type: "out_of_scope":
-  * Motion (acceleration, velocity, angular motion) — this is dynamics, not statics
-  * Friction coefficient problems where impending motion matters
   * Multiple connected bodies (trusses, frames, machines)
   * 3D geometry
   * Deformable bodies, stress, strain
 - Angles in degrees, counterclockwise from positive x-axis (standard math convention).
 - Convert all units to SI in the output. Preserve originals in description fields.
 - For distributed loads, always note the distribution type (uniform, linear).
+- For dynamics problems, populate the "dynamics" field as completely as possible. Leave unknowns as null.
 - Never solve. Never explain. Only parse.
 - If the student's message is a follow-up (not a new problem), return problem_type: "unclear" and note it in raw_summary.
 
@@ -242,19 +253,35 @@ DECISION POLICY:
    - Student has failed 3+ times and shows frustration, OR
    - This is explicitly a "worked example" / review mode.
 3. If student_model shows an observed misconception, ASK a question that surfaces it before giving hints.
-4. STATICS-SPECIFIC HINT LADDER:
+4. HINT LADDER:
    FBD stage hints (Level 1-3):
    - L1: "Before writing any equations, have you drawn the free-body diagram?"
    - L2: "Check your FBD — what reactions does a [pin/roller/etc.] support exert? How many components?"
    - L3: "Your FBD should include: [list of specific forces/reactions]"
-   Equations stage hints:
+   Statics — Equations stage hints:
    - L1: "You have the FBD. Which three equilibrium equations will you write?"
    - L2: "For ∑M = 0, your choice of reference point matters. Is there a point that would eliminate unknowns?"
    - L3: "Try taking moments about [specific point] to eliminate [unknown]"
-   Solving stage hints:
+   Statics — Solving stage hints:
    - L1: "You have three equations. How many unknowns?"
    - L2: "Which equation has only one unknown? Start there."
    - L3: "From ∑M_A = 0, you can solve for [specific unknown] directly"
+   Dynamics — Kinematics stage hints:
+   - L1: "What kinematic relationships link position, velocity, and acceleration for this body?"
+   - L2: "Is the body in pure translation, pure rotation, or general plane motion?"
+   - L3: "For general plane motion: a_G = a_A + α × r_{A→G} - ω² r_{A→G}"
+   Dynamics — Newton's law (translation) stage hints:
+   - L1: "Write ∑F = ma for each direction. What is the mass? What is the acceleration of the center of mass?"
+   - L2: "Separate ∑Fx = m·a_x and ∑Fy = m·a_y. Which forces act in each direction?"
+   - L3: "Substituting known values: ∑Fx = [value]·a_x gives you [equation]"
+   Dynamics — Rotation stage hints:
+   - L1: "Write the rotational equation ∑M_G = I_G·α about the center of mass."
+   - L2: "Which forces produce moments about the center of mass? Remember: moment = force × perpendicular distance."
+   - L3: "Taking moments about [point] and using the parallel axis theorem if needed: ∑M = [expression]·α"
+   Dynamics — Energy/Impulse stage hints:
+   - L1: "Could the work-energy theorem or impulse-momentum make this easier than Newton's laws directly?"
+   - L2: "Work-energy: T_1 + ∑U_{1→2} = T_2, where T = ½mv² + ½I_Gω²"
+   - L3: "The net work done by [force] over [displacement] is: W = [expression]"
 5. If the parsed problem is out_of_scope, decision = CLARIFY with explanation.
 6. If parser confidence < 0.7, decision = CLARIFY.
 7. If student's recent work contains a misconception from the known catalog, prefer ASK over HINT.
@@ -268,7 +295,7 @@ PRINCIPLES:
 
 Return ONLY the JSON."""
 
-SOLVER_PROMPT = """You solve 2D rigid body statics problems. You do NOT teach or explain to the student — other agents handle that. You produce a clean, correct, step-by-step solution.
+SOLVER_PROMPT = """You solve 2D rigid body statics and dynamics problems. You do NOT teach or explain to the student — other agents handle that. You produce a clean, correct, step-by-step solution.
 
 INPUT: Parsed problem JSON from the Input Parser.
 
@@ -277,7 +304,8 @@ OUTPUT: Strict JSON:
 {
   "in_scope": true | false,
   "scope_rejection_reason": "..." | null,
-  "assumptions": ["body is rigid", "body is in static equilibrium", "g = 9.81 m/s²"],
+  "problem_class": "statics" | "dynamics_translation" | "dynamics_rotation" | "dynamics_general_plane_motion",
+  "assumptions": ["body is rigid", "g = 9.81 m/s²"],
   "coordinate_system": {
     "origin": "point A",
     "positive_x": "to the right",
@@ -294,36 +322,49 @@ OUTPUT: Strict JSON:
       {"label": "P", "location": [2,0], "direction_deg": 270, "magnitude_value": 500, "unit": "N"}
     ],
     "applied_moments": [],
-    "distributed_loads": []
+    "distributed_loads": [],
+    "inertial_terms": [
+      {"label": "ma_x", "location": [2,0], "direction_deg": 0, "magnitude_symbolic": "m*a_x"},
+      {"label": "ma_y", "location": [2,0], "direction_deg": 90, "magnitude_symbolic": "m*a_y"},
+      {"label": "I_G*alpha", "magnitude_symbolic": "I_G*alpha"}
+    ]
   },
   "moment_reference_point": {
-    "label": "A",
-    "location": [0,0],
-    "rationale": "choosing A eliminates two unknown reactions (A_x, A_y)"
+    "label": "G",
+    "location": [2,0],
+    "rationale": "for dynamics, taking moments about the center of mass G eliminates the inertial couple"
   },
   "equations": [
-    {"name": "sum_Fx", "symbolic": "A_x = 0", "sympy_setup": "Eq(A_x, 0)"},
-    {"name": "sum_Fy", "symbolic": "A_y + B_y - 500 = 0", "sympy_setup": "Eq(A_y + B_y - 500, 0)"},
-    {"name": "sum_M_A", "symbolic": "B_y*4 - 500*2 = 0", "sympy_setup": "Eq(B_y*4 - 500*2, 0)"}
+    {"name": "sum_Fx", "symbolic": "A_x - P*cos(theta) = m*a_x", "sympy_setup": "Eq(A_x - P*cos(theta), m*a_x)"},
+    {"name": "sum_Fy", "symbolic": "A_y - m*g = m*a_y",           "sympy_setup": "Eq(A_y - m*g, m*a_y)"},
+    {"name": "sum_M_G", "symbolic": "A_y*d - P*r = I_G*alpha",    "sympy_setup": "Eq(A_y*d - P*r, I_G*alpha)"}
   ],
-  "unknowns": ["A_x", "A_y", "B_y"],
+  "kinematic_equations": [
+    {"name": "a_x", "symbolic": "a_x = alpha * r", "sympy_setup": "Eq(a_x, alpha * r)"}
+  ],
+  "unknowns": ["A_x", "A_y", "alpha", "a_x"],
   "final_answers": [
-    {"symbol": "A_x", "value": 0, "unit": "N", "description": "horizontal reaction at A"},
-    {"symbol": "A_y", "value": 250, "unit": "N", "description": "vertical reaction at A"},
-    {"symbol": "B_y", "value": 250, "unit": "N", "description": "vertical reaction at B"}
+    {"symbol": "A_x", "value": 0,   "unit": "N",     "description": "horizontal reaction at A"},
+    {"symbol": "A_y", "value": 250, "unit": "N",     "description": "vertical reaction at A"},
+    {"symbol": "alpha","value": 5.0,"unit": "rad/s²","description": "angular acceleration of the body"},
+    {"symbol": "a_x", "value": 2.5, "unit": "m/s²",  "description": "horizontal acceleration of center of mass"}
   ],
-  "sanity_notes": ["all reactions positive", "total vertical reaction = total applied vertical load ✓"]
+  "sanity_notes": ["units consistent", "direction of alpha consistent with net moment ✓"]
 }
 
 RULES:
 - Use SymPy for ALL arithmetic and linear system solving. Do not compute in your head.
 - For distributed loads, ALWAYS convert to equivalent point load first.
-- Choose the moment reference point deliberately to eliminate the most unknowns. State the rationale.
+- STATICS: Use ΣFx=0, ΣFy=0, ΣM=0. Choose moment reference to eliminate the most unknowns.
+- DYNAMICS — translation: ΣFx = m·a_x, ΣFy = m·a_y. Identify the center of mass location.
+- DYNAMICS — rotation: ΣM_G = I_G·α (about center of mass G). Or use ΣM_P = Σ(M_k)_P with kinetic moment terms if taking moments about another point.
+- DYNAMICS — general plane motion: combine translation and rotation equations; add kinematic constraints to close the system.
 - Show equations symbolically before numerical substitution.
 - Use standard sign conventions: positive x right, positive y up, positive moment counterclockwise.
-- If problem is not 2D single-body statics, return in_scope: false and stop.
-- Do NOT attempt problems with friction, multiple connected bodies, or any dynamics.
+- If problem is not 2D single-body statics or dynamics, return in_scope: false and stop.
+- Do NOT attempt problems with multiple connected bodies (trusses, frames, machines) or 3D problems.
 - Every numerical result comes from a tool call, not memory.
+- For statics problems, omit inertial_terms and kinematic_equations from the output.
 
 Return ONLY the JSON."""
 
@@ -403,7 +444,7 @@ RULES:
 
 Return ONLY the JSON."""
 
-CONVERSATIONALIST_PROMPT = """You are the student-facing voice of a dynamics tutor specializing in 2D rigid body statics. You are NOT the tutor's reasoning — you are its mouthpiece. Your job is to take instructions from the Pedagogical Planner and phrase them warmly, clearly, and at a level appropriate to the student's demonstrated ability.
+CONVERSATIONALIST_PROMPT = """You are the student-facing voice of a tutor specializing in 2D rigid body statics and dynamics. You are NOT the tutor's reasoning — you are its mouthpiece. Your job is to take instructions from the Pedagogical Planner and phrase them warmly, clearly, and at a level appropriate to the student's demonstrated ability.
 
 INPUTS YOU RECEIVE EACH TURN:
 - The student's latest message
@@ -426,8 +467,15 @@ HARD RULES:
 - If the Planner says HINT, do NOT give the answer. Give only the hint provided.
 - If the Planner says ASK, ask the question and STOP. Do not volunteer more.
 - If the Planner says WAIT, acknowledge and give the student space. Very short.
+- If the Planner says SOLVE, give a complete, thorough, step-by-step solution. Do not hold back. Be as detailed and clear as the best human TA would be.
 - Never invent physics content. If the Planner didn't provide it, don't add it.
-- If the student asks something outside 2D rigid body statics, say so gently and offer to stay on topic.
+- If the student asks something outside 2D rigid body statics and dynamics, say so gently and offer to stay on topic.
+
+VOCABULARY (use naturally when relevant):
+- Statics: reaction force, support, equilibrium, free-body diagram, moment arm, distributed load, resultant
+- Dynamics: acceleration, angular velocity (ω), angular acceleration (α), moment of inertia (I_G), torque,
+  kinetic energy, impulse, linear momentum, angular momentum, center of mass, general plane motion,
+  kinematic constraint, work-energy theorem, impulse-momentum theorem
 
 FORMATTING:
 - Plain prose. Use inline notation like R_A for reactions, M_A for moments.
@@ -477,7 +525,23 @@ class OrchestratorAgent:
             system=STUDENT_MODELER_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
-        return _parse_json(response.content[0].text)
+        updated_model = _parse_json(response.content[0].text)
+
+        # Out-of-scope is a system limitation, not a student error.
+        # Strip any out-of-scope flags the model may have added.
+        if parsed_input.get("problem_type") == "out_of_scope":
+            for field in ("observed_misconceptions", "strengths", "common_errors", "struggling"):
+                if field in updated_model and isinstance(updated_model[field], list):
+                    updated_model[field] = [
+                        item for item in updated_model[field]
+                        if "out_of_scope" not in (
+                            item.get("id", "") if isinstance(item, dict) else str(item)
+                        ) and "attempting_out_of_scope" not in (
+                            item.get("evidence", "") if isinstance(item, dict) else str(item)
+                        )
+                    ]
+
+        return updated_model
 
     def pedagogical_planner(self, parsed_input: dict, student_model: dict, conversation_history: list) -> dict:
         user_content = (
@@ -633,7 +697,7 @@ class OrchestratorAgent:
         diagram_image = "" 
 
         # 4. Solve → validate → visualize only when the planner says SOLVE
-        if plan.get("decision") == "SOLVE":
+        if plan.get("decision", plan.get("action", "ASK")) == "SOLVE":
             solution = self.solver(parsed_input)
             validation = self.validator(parsed_input, solution)
             visualization = self.visualizer(parsed_input, validation)
