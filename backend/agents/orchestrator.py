@@ -214,6 +214,11 @@ Return ONLY the JSON. No prose."""
 
 PEDAGOGICAL_PLANNER_PROMPT = """You decide what the tutor should do next. You are the pedagogical judgment of the system. Your goal is LEARNING, not problem completion.
 
+OVERRIDE RULE — CHECK FIRST BEFORE ANYTHING ELSE:
+If the student's message contains the phrase "worked example", you MUST return:
+{"decision": "SOLVE", "rationale": "Student requested worked example", "payload": {"permission_source": "review_mode"}, "target_misconception": null}
+No exceptions. Do not apply any other rules. Return this immediately.
+
 INPUTS:
 - Parsed problem (from Input Parser)
 - Updated student model (from Student Modeler)
@@ -436,6 +441,47 @@ FORMATTING:
 
 Return only your response to the student. No JSON. No meta-commentary."""
 
+
+
+ROUTER_PROMPT = """You are the Router for a 2D rigid body statics tutoring system. You classify the student's latest message into exactly one route so the system knows which agents to run. You do NOT answer the student. You do NOT solve anything.
+
+OUTPUT strict JSON:
+{
+  "route": "PROBLEM" | "CONCEPT" | "SMALLTALK" | "OUT_OF_SCOPE",
+  "rationale": "one short sentence",
+  "confidence": 0.0 to 1.0
+}
+
+ROUTE DEFINITIONS:
+- PROBLEM: The student presents a specific statics problem to solve, OR is actively working one (giving an answer, asking for a hint on a problem already in play, sharing their FBD or equations). Anything that needs the solver or diagram machinery.
+- CONCEPT: A general "what/how/why" question about 2D statics NOT tied to solving a specific numeric problem. Examples: "what is a moment?", "why does choosing the pin eliminate unknowns?", "how many reactions does a roller have?".
+- SMALLTALK: Greetings, thanks, "what can you do?", or messages with no statics content to act on.
+- OUT_OF_SCOPE: Dynamics (acceleration, velocity, motion), trusses/frames/machines (multiple connected bodies), 3D problems, stress/strain/deformation, or friction with impending motion. Anything outside single-body 2D statics.
+
+RULES:
+- Choose exactly one route.
+- If a message both asks a concept AND presents a problem, choose PROBLEM.
+- If the message is a follow-up to a problem already being solved, choose PROBLEM.
+- When unsure between CONCEPT and SMALLTALK, choose CONCEPT.
+
+Return ONLY the JSON object. No prose."""
+
+
+DIRECT_TUTOR_PROMPT = """You are a warm, knowledgeable TA for 2D rigid body statics. You handle messages that are NOT full problems to solve. You will be told the route.
+
+You receive:
+- route: one of CONCEPT, SMALLTALK, OUT_OF_SCOPE
+- the student's message
+
+Behavior by route:
+- CONCEPT: Answer the conceptual statics question directly and correctly, briefly (2-5 sentences). A small example is fine. Use inline notation like R_A, M_A. Do NOT solve a full numeric problem.
+- SMALLTALK: Respond briefly and warmly. If asked what you can do, say you help with 2D rigid body statics: free-body diagrams, support reactions, and equilibrium equations.
+- OUT_OF_SCOPE: Gently explain this is outside 2D rigid body statics (e.g., it involves motion, multiple connected bodies, or 3D), and offer to help with a statics version instead. Do not attempt it.
+
+TONE: Warm but not saccharine. A knowledgeable TA, not a cheerleader. Plain prose. Brief.
+
+Return only your response to the student. No JSON. No meta-commentary."""
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
@@ -464,6 +510,32 @@ class OrchestratorAgent:
         )
         return _parse_json(response.content[0].text)
 
+
+
+    def router(self, message: str, conversation_history: list) -> dict:
+        history_text = _format_history(conversation_history)
+        user_content = f"Conversation so far:\n{history_text}\n\nStudent's latest message:\n{message}"
+        response = self.client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=256,
+            temperature=0,
+            system=ROUTER_PROMPT,
+            messages=[{"role": "user", "content": user_content}],
+        )
+        return _parse_json(response.content[0].text)
+
+    def direct_tutor(self, message: str, route: str) -> str:
+        user_content = f"Route: {route}\n\nStudent's message:\n{message}"
+        response = self.client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=1024,
+            temperature=0.5,
+            system=DIRECT_TUTOR_PROMPT,
+            messages=[{"role": "user", "content": user_content}],
+        )
+        return response.content[0].text
+
+
     def student_modeler(self, parsed_input: dict, student_model: dict, conversation_history: list) -> dict:
         user_content = (
             f"Parsed problem input:\n{json.dumps(parsed_input, indent=2)}\n\n"
@@ -479,8 +551,9 @@ class OrchestratorAgent:
         )
         return _parse_json(response.content[0].text)
 
-    def pedagogical_planner(self, parsed_input: dict, student_model: dict, conversation_history: list) -> dict:
+    def pedagogical_planner(self, parsed_input: dict, student_model: dict, conversation_history: list, raw_message: str = "") -> dict:
         user_content = (
+            f"Student's raw message: {raw_message}\n\n"
             f"Parsed problem input:\n{json.dumps(parsed_input, indent=2)}\n\n"
             f"Student model:\n{json.dumps(student_model, indent=2)}\n\n"
             f"Conversation history:\n{_format_history(conversation_history)}"
@@ -598,48 +671,45 @@ class OrchestratorAgent:
     # Main pipeline
     # -----------------------------------------------------------------------
 
+
+
     def run(self, message: str, conversation_history: list, student_model: dict) -> dict:
-        """
-        Orchestrate the full 7-agent pipeline.
+        # 0. Route first — one cheap Haiku call decides which path to take
+        route_decision = self.router(message, conversation_history)
+        route = route_decision.get("route", "PROBLEM")
 
-        Args:
-            message: The student's latest message.
-            conversation_history: List of dicts with 'role' and 'content'.
-            student_model: Current student model dict (may be empty).
-
-        Returns:
-            {
-                "response": str,           # conversationalist reply
-                "updated_student_model": dict,
-                "plan": dict,
-                "solution": dict | None,
-                "validation": dict | None,
-                "visualization": dict | None,
-                "parsed_input": dict,
+        # Light paths: skip parser/solver/diagram machinery entirely
+        if route in ("CONCEPT", "SMALLTALK", "OUT_OF_SCOPE"):
+            response_text = self.direct_tutor(message, route)
+            return {
+                "response": response_text,
+                "updated_student_model": student_model,  # unchanged: modeler did not run
+                "plan": {"decision": route},
+                "solution": None,
+                "validation": None,
+                "visualization": None,
+                "diagram_image": "",
+                "parsed_input": None,
+                "route": route,
+                "route_decision": route_decision,
             }
-        """
-        # 1. Parse input
+
+        # PROBLEM path: the full pipeline (unchanged from before)
         parsed_input = self.input_parser(message, conversation_history)
-
-        # 2. Update student model
         updated_student_model = self.student_modeler(parsed_input, student_model, conversation_history)
-
-        # 3. Decide what to do
-        plan = self.pedagogical_planner(parsed_input, updated_student_model, conversation_history)
+        plan = self.pedagogical_planner(parsed_input, updated_student_model, conversation_history, raw_message=message)
 
         solution = None
         validation = None
         visualization = None
-        diagram_image = "" 
+        diagram_image = ""
 
-        # 4. Solve → validate → visualize only when the planner says SOLVE
         if plan.get("decision") == "SOLVE":
             solution = self.solver(parsed_input)
             validation = self.validator(parsed_input, solution)
             visualization = self.visualizer(parsed_input, validation)
             diagram_image = self.diagram_renderer(visualization, solution)
 
-        # 5. Generate the student-facing response
         response_text = self.conversationalist(
             student_message=message,
             parsed_input=parsed_input,
@@ -659,7 +729,73 @@ class OrchestratorAgent:
             "visualization": visualization,
             "diagram_image": diagram_image if plan.get("decision") == "SOLVE" else "",
             "parsed_input": parsed_input,
+            "route": route,
+            "route_decision": route_decision,
         }
+
+
+    # def run(self, message: str, conversation_history: list, student_model: dict) -> dict:
+    #     """
+    #     Orchestrate the full 7-agent pipeline.
+
+    #     Args:
+    #         message: The student's latest message.
+    #         conversation_history: List of dicts with 'role' and 'content'.
+    #         student_model: Current student model dict (may be empty).
+
+    #     Returns:
+    #         {
+    #             "response": str,           # conversationalist reply
+    #             "updated_student_model": dict,
+    #             "plan": dict,
+    #             "solution": dict | None,
+    #             "validation": dict | None,
+    #             "visualization": dict | None,
+    #             "parsed_input": dict,
+    #         }
+    #     """
+    #     # 1. Parse input
+    #     parsed_input = self.input_parser(message, conversation_history)
+
+    #     # 2. Update student model
+    #     updated_student_model = self.student_modeler(parsed_input, student_model, conversation_history)
+
+    #     # 3. Decide what to do
+    #     plan = self.pedagogical_planner(parsed_input, updated_student_model, conversation_history, raw_message=message)
+
+    #     solution = None
+    #     validation = None
+    #     visualization = None
+    #     diagram_image = "" 
+
+    #     # 4. Solve → validate → visualize only when the planner says SOLVE
+    #     if plan.get("decision") == "SOLVE":
+    #         solution = self.solver(parsed_input)
+    #         validation = self.validator(parsed_input, solution)
+    #         visualization = self.visualizer(parsed_input, validation)
+    #         diagram_image = self.diagram_renderer(visualization, solution)
+
+    #     # 5. Generate the student-facing response
+    #     response_text = self.conversationalist(
+    #         student_message=message,
+    #         parsed_input=parsed_input,
+    #         student_model=updated_student_model,
+    #         plan=plan,
+    #         solution=solution,
+    #         validation=validation,
+    #         visualization=visualization,
+    #     )
+
+    #     return {
+    #         "response": response_text,
+    #         "updated_student_model": updated_student_model,
+    #         "plan": plan,
+    #         "solution": solution,
+    #         "validation": validation,
+    #         "visualization": visualization,
+    #         "diagram_image": diagram_image if plan.get("decision") == "SOLVE" else "",
+    #         "parsed_input": parsed_input,
+    #     }
 
 
 # ---------------------------------------------------------------------------
