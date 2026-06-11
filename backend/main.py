@@ -227,5 +227,6 @@ def tutor_endpoint(request: TutorRequest):
             "solution": result["solution"],
             "validation": result["validation"],
             "visualization": result["visualization"],
+            "route": result.get("route"),
         },
     )

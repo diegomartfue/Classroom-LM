@@ -40,6 +40,8 @@ export default function ClassroomLM() {
   const [activeId, setActiveId] = useState<string>('seed-1');
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [attachedContext, setAttachedContext] = useState<string>('');
+  const [isUploading, setIsUploading] = useState(false);
   const [studentModel, setStudentModel] = useState<object>({});
 
   const active = conversations.find(c => c.id === activeId);
@@ -100,7 +102,9 @@ export default function ClassroomLM() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: text,
+          message: attachedContext 
+            ? `[DOCUMENT CONTEXT]:\n${attachedContext}\n\n[STUDENT QUESTION]: ${text}`
+            : text,
           conversation_history: currentMessages.map(m => ({
             role: m.role === 'ai' ? 'assistant' : 'user',
             content: m.content,
@@ -141,14 +145,61 @@ export default function ClassroomLM() {
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const formData = new FormData();
-    formData.append('file', file);
+
+    setIsUploading(true);
+
+    // Add a system message showing upload is in progress
+    const uploadingMsg: Message = {
+      id: `m-${Date.now()}-upload`,
+      role: 'ai',
+      content: `📎 Reading ${file.name}...`,
+      source: null,
+    };
+    updateActive(c => ({ ...c, messages: [...c.messages, uploadingMsg] }));
+
     try {
-      await fetch(`${API_BASE}/upload`, { method: 'POST', body: formData });
-      // optional: toast success
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const res = await fetch(`${API_BASE}/interpret`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+
+      if (data.status === 'success') {
+        // Store extracted text as context
+        setAttachedContext(data.extracted_text);
+
+        // Replace uploading message with success message
+        const successMsg: Message = {
+          id: `m-${Date.now()}-success`,
+          role: 'ai',
+          content: `📎 **${file.name}** uploaded successfully. I can now see the content. Ask me anything about it!`,
+          source: null,
+        };
+        updateActive(c => ({
+          ...c,
+          messages: [...c.messages.filter(m => m.id !== uploadingMsg.id), successMsg]
+        }));
+      } else {
+        throw new Error(data.message);
+      }
     } catch (err) {
-      console.error('Upload failed', err);
+      const errMsg: Message = {
+        id: `m-${Date.now()}-err`,
+        role: 'ai',
+        content: `Failed to read file: ${(err as Error).message}`,
+        source: null,
+      };
+      updateActive(c => ({
+        ...c,
+        messages: [...c.messages.filter(m => m.id !== uploadingMsg.id), errMsg]
+      }));
     } finally {
+      setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   }
@@ -211,7 +262,7 @@ export default function ClassroomLM() {
             ref={fileInputRef}
             onChange={handleUpload}
             style={{ display: 'none' }}
-            accept=".pdf,.txt,.md,.png,.jpg,.jpeg"
+            accept=".pdf,.png,.jpg,.jpeg,.gif,.webp"
           />
 
           <div className="clm-user-card">
@@ -271,8 +322,10 @@ export default function ClassroomLM() {
                 className="clm-icon-btn"
                 onClick={() => fileInputRef.current?.click()}
                 title="Attach file"
+                disabled={isUploading}
+                style={{ opacity: isUploading ? 0.5 : 1 }}
               >
-                <AttachIcon />
+                {isUploading ? '⏳' : <AttachIcon />}
               </button>
               <button
                 className="clm-send-btn"
