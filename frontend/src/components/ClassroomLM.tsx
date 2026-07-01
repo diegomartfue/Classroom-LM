@@ -75,15 +75,11 @@ export default function ClassroomLM() {
     setTimeout(() => textareaRef.current?.focus(), 0);
   }
 
-  async function sendMessage(overrideText?: string) {
+async function sendMessage(overrideText?: string) {
     const text = (overrideText ?? input).trim();
     if (!text || isLoading) return;
 
-    const userMsg: Message = {
-      id: `m-${Date.now()}`,
-      role: 'user',
-      content: text,
-    };
+    const userMsg: Message = { id: `m-${Date.now()}`, role: 'user', content: text };
 
     updateActive(c => ({
       ...c,
@@ -96,13 +92,23 @@ export default function ClassroomLM() {
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
     setIsLoading(true);
 
+    const aiId = `m-${Date.now()}-ai`;
+    const aiMsg: Message = { id: aiId, role: 'ai', content: '', source: 'llm', citations: [] };
+    updateActive(c => ({ ...c, messages: [...c.messages, aiMsg] }));
+
+    const patchAi = (patch: Partial<Message>) =>
+      updateActive(c => ({
+        ...c,
+        messages: c.messages.map(m => (m.id === aiId ? { ...m, ...patch } : m)),
+      }));
+
     try {
       const currentMessages = conversations.find(c => c.id === activeId)?.messages ?? [];
-      const res = await fetch(`${API_BASE}/tutor`, {
+      const res = await fetch(`${API_BASE}/tutor/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: attachedContext 
+          message: attachedContext
             ? `[DOCUMENT CONTEXT]:\n${attachedContext}\n\n[STUDENT QUESTION]: ${text}`
             : text,
           conversation_history: currentMessages.map(m => ({
@@ -113,30 +119,56 @@ export default function ClassroomLM() {
         }),
       });
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
-      if (data.student_model) {
-        setStudentModel(data.student_model);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let streamed = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const frames = buffer.split('\n\n');
+        buffer = frames.pop() ?? '';
+
+        for (const frame of frames) {
+          const line = frame.trim();
+          if (!line.startsWith('data:')) continue;
+
+          let evt: any;
+          try {
+            evt = JSON.parse(line.slice(5).trim());
+          } catch {
+            continue;
+          }
+
+          if (evt.type === 'status') {
+            if (!streamed) patchAi({ content: evt.text });
+          } else if (evt.type === 'meta') {
+            if (evt.student_model) setStudentModel(evt.student_model);
+            patchAi({
+              source: (evt.decision?.toLowerCase() as MessageSource) ?? 'llm',
+              diagram: evt.diagram_image || undefined,
+            });
+          } else if (evt.type === 'token') {
+            streamed += evt.text;
+            patchAi({ content: streamed });
+          } else if (evt.type === 'error') {
+            streamed += `\n\n[error: ${evt.text}]`;
+            patchAi({ content: streamed });
+          }
+        }
       }
 
-      const aiMsg: Message = {
-        id: `m-${Date.now()}-ai`,
-        role: 'ai',
-        content: data.response ?? '(no response)',
-        source: (data.decision?.toLowerCase() as MessageSource) ?? 'llm',
-        citations: [],
-        diagram: data.diagram_image || undefined,
-      };
-      updateActive(c => ({ ...c, messages: [...c.messages, aiMsg] }));
+      if (!streamed) patchAi({ content: '(no response)' });
     } catch (err) {
-      const errMsg: Message = {
-        id: `m-${Date.now()}-err`,
-        role: 'ai',
+      patchAi({
         content: `Error reaching backend: ${(err as Error).message}. Is \`uvicorn main:app\` running?`,
         source: null,
-      };
-      updateActive(c => ({ ...c, messages: [...c.messages, errMsg] }));
+      });
     } finally {
       setIsLoading(false);
     }
@@ -293,10 +325,12 @@ export default function ClassroomLM() {
             <WelcomeScreen onPick={text => sendMessage(text)} />
           ) : (
             <div className="clm-messages-inner">
-              {messages.map(m => (
-                <MessageView key={m.id} m={m} />
-              ))}
-              {isLoading && <TypingBubble />}
+              {messages
+                .filter(m => !(m.role === 'ai' && m.content === ''))
+                .map(m => (
+                  <MessageView key={m.id} m={m} />
+                ))}
+              {isLoading && messages[messages.length - 1]?.content === '' && <TypingBubble />}
               <div ref={messagesEndRef} />
             </div>
           )}
