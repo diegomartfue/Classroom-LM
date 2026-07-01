@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import io
 import base64
-from .fbd_renderer import render_fbd
+from .fbd_renderer import render_fbd, render_schematic
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -415,6 +415,43 @@ RULES:
 
 Return ONLY the JSON object. No prose."""
 
+
+
+SCHEMATIC_LAYOUT_PROMPT = """You lay out an APPROXIMATE schematic sketch of a 2D dynamics setup that the single-body FBD renderer could NOT draw (multi-body mechanisms: gears, linkages, connected masses, pulleys, rotating rods). You do NOT write code. You output JSON drawing primitives with coordinates; a deterministic renderer draws exactly what you specify.
+
+INPUT: the parsed problem and (if available) the solver's solution.
+
+GOAL: place the bodies in roughly their real geometric arrangement so a student can see the setup. It does NOT need to be exact or to scale — a recognizable rough sketch is the goal. ALWAYS produce a drawing; never refuse.
+
+COORDINATES: arbitrary units, keep everything roughly within x in [-1, 5], y in [-1, 5]. +x right, +y up.
+
+OUTPUT strict JSON:
+{
+  "drawable": true,
+  "title": "short label, e.g. '3-bar linkage (approximate)'",
+  "primitives": [
+    {"type":"line","x1":0,"y1":0,"x2":0,"y2":1.5,"label":"BLACK 1.5 m","color":"black"},
+    {"type":"circle","cx":2.0,"cy":1.5,"r":0.3,"label":"RED gear","color":"red"},
+    {"type":"box","cx":1.0,"cy":0.5,"w":0.4,"h":0.4,"label":"12 kg","color":"navy"},
+    {"type":"point","x":0,"y":1.5,"label":"A (pivot)","color":"blue"},
+    {"type":"arrow","x1":0,"y1":1.5,"x2":0.6,"y2":1.5,"label":"omega=2 rad/s","color":"orange"},
+    {"type":"note","x":-1,"y":-0.8,"text":"given: L=1 m, theta=30 deg"}
+  ]
+}
+
+PRIMITIVE RULES:
+- Use ONLY these six types: line, circle, box, point, arrow, note. Anything else is ignored.
+- Rods/bars/sticks -> "line". Gears/disks/wheels -> "circle". Blocks/masses -> "box". Pivots/fixed points/joints -> "point". Angular velocities or applied forces -> "arrow" (approximate a rotation as a short straight arrow with an omega label). Textual givens -> "note".
+- color: one of black, red, blue, green, navy, orange, gray. Match colors the problem names (e.g. "the RED gear" -> color red).
+- Label every physical primitive with its name and, when known, its given value (length, radius, mass, angle, omega).
+- Use the stated angles/lengths/positions to place things approximately (e.g. a rod at 30 deg from horizontal; a 1 m vertical rod from a ground pivot).
+- Include ONE "note" primitive near the bottom summarizing givens you could not place.
+
+RULES:
+- drawable is ALWAYS true. Never return an empty primitives list — at minimum place each body.
+- Approximate is fine. Do the best geometric placement you can.
+- Return ONLY the JSON object. No prose."""
+
 CONVERSATIONALIST_PROMPT = """You are the student-facing voice of a tutor specializing in 2D dynamics (particles and rigid bodies). You are NOT the tutor's reasoning — you are its mouthpiece. Take instructions from the Pedagogical Planner and phrase them warmly, clearly, and at the student's level.
 
 INPUTS EACH TURN:
@@ -673,6 +710,23 @@ class OrchestratorAgent:
             messages=[{"role": "user", "content": user_content}],
         )
         return _parse_json(response.content[0].text)
+    
+    
+    def schematic_layout(self, parsed_input: dict, solution: dict | None) -> dict:
+        user_content = (
+            f"Parsed problem:\n{json.dumps(parsed_input, indent=2)}\n\n"
+            f"Solver solution (may be null):\n{json.dumps(solution, indent=2)}"
+        )
+        response = self.client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=1500,
+            temperature=0.2,
+            system=SCHEMATIC_LAYOUT_PROMPT,
+            messages=[{"role": "user", "content": user_content}],
+        )
+        return _parse_json(response.content[0].text)
+    
+    
         
     def diagram_renderer(self, visualizer_output: dict, solution: dict) -> str:
         """
@@ -794,6 +848,9 @@ class OrchestratorAgent:
             validation = self.validator(parsed_input, solution)
             visualization = self.visualizer(parsed_input, solution)
             diagram_image = render_fbd(visualization)
+            if not diagram_image:
+                layout = self.schematic_layout(parsed_input, solution)
+                diagram_image = render_schematic(layout)
 
         response_text = self.conversationalist(
             student_message=message,
@@ -869,6 +926,9 @@ class OrchestratorAgent:
             yield {"type": "status", "text": "Drawing the diagram\u2026"}
             visualization = self.visualizer(parsed_input, solution)
             diagram_image = render_fbd(visualization)
+            if not diagram_image:
+                layout = self.schematic_layout(parsed_input, solution)
+                diagram_image = render_schematic(layout)
 
         # meta BEFORE tokens so the frontend can attach diagram + student_model first
         yield {"type": "meta", "student_model": updated_student_model, "route": route,
