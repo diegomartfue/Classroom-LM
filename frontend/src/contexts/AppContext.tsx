@@ -272,7 +272,7 @@ function generateQuestion(number: number, type: string, topic: string): Question
  */
 async function simulateAITutorResponse(
   message: string, 
-  model: string = "qwen",
+  model: string = "claude",
   conversationHistory: { role: string; content: string }[] = []
 ): Promise<string> {
   try {
@@ -521,7 +521,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     content: m.content,
   }));
     
-  const response = await simulateAITutorResponse(message, "qwen", history);
+  const response = await simulateAITutorResponse(message, "claude", history);
 
   const aiMessage: ChatMessage = {
     id: `msg-${Date.now()}-ai`,
