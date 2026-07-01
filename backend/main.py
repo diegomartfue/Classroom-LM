@@ -1,6 +1,6 @@
 """
 ClassroomLM Backend - FastAPI Server
-Handles AI tutoring requests with Ollama + SymPy verification.
+Handles AI tutoring requests with Claude + SymPy verification.
 """
 import shutil
 import os
@@ -32,7 +32,7 @@ app.add_middleware(
 
 class ChatRequest(BaseModel):
     message: str
-    model: str = "qwen"        # "qwen" or "deepseek"
+    model: str = "claude"
     role: str = "student"      # "student" or "professor"
     conversation_history: list = []
 
@@ -79,7 +79,7 @@ def chat_endpoint(request: ChatRequest):
     """
     Main chat endpoint.
     1. Run SymPy verification if it's a math problem
-    2. Send to Ollama with SymPy result injected if available
+    2. Send to Claude with SymPy result injected if available
     3. Return response + verification status
     """
 
