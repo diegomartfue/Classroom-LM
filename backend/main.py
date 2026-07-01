@@ -5,7 +5,9 @@ Handles AI tutoring requests with Claude + SymPy verification.
 import shutil
 import os
 import base64
+import json
 from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from rag_pipeline import ingest_document, query_rag
 from pydantic import BaseModel
@@ -227,5 +229,19 @@ def tutor_endpoint(request: TutorRequest):
             "solution": result["solution"],
             "validation": result["validation"],
             "visualization": result["visualization"],
+            "route": result.get("route"),
         },
     )
+    
+@app.post("/tutor/stream")
+def tutor_stream_endpoint(request: TutorRequest):
+    agent = OrchestratorAgent()
+
+    def event_gen():
+        try:
+            for event in agent.run_stream(request.message, request.conversation_history, request.student_model):
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'text': str(e)})}\n\n"
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")

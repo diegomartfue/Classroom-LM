@@ -40,6 +40,8 @@ export default function ClassroomLM() {
   const [activeId, setActiveId] = useState<string>('seed-1');
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [attachedContext, setAttachedContext] = useState<string>('');
+  const [isUploading, setIsUploading] = useState(false);
   const [studentModel, setStudentModel] = useState<object>({});
 
   const active = conversations.find(c => c.id === activeId);
@@ -73,15 +75,11 @@ export default function ClassroomLM() {
     setTimeout(() => textareaRef.current?.focus(), 0);
   }
 
-  async function sendMessage(overrideText?: string) {
+async function sendMessage(overrideText?: string) {
     const text = (overrideText ?? input).trim();
     if (!text || isLoading) return;
 
-    const userMsg: Message = {
-      id: `m-${Date.now()}`,
-      role: 'user',
-      content: text,
-    };
+    const userMsg: Message = { id: `m-${Date.now()}`, role: 'user', content: text };
 
     updateActive(c => ({
       ...c,
@@ -94,13 +92,25 @@ export default function ClassroomLM() {
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
     setIsLoading(true);
 
+    const aiId = `m-${Date.now()}-ai`;
+    const aiMsg: Message = { id: aiId, role: 'ai', content: '', source: 'llm', citations: [] };
+    updateActive(c => ({ ...c, messages: [...c.messages, aiMsg] }));
+
+    const patchAi = (patch: Partial<Message>) =>
+      updateActive(c => ({
+        ...c,
+        messages: c.messages.map(m => (m.id === aiId ? { ...m, ...patch } : m)),
+      }));
+
     try {
       const currentMessages = conversations.find(c => c.id === activeId)?.messages ?? [];
-      const res = await fetch(`${API_BASE}/tutor`, {
+      const res = await fetch(`${API_BASE}/tutor/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: text,
+          message: attachedContext
+            ? `[DOCUMENT CONTEXT]:\n${attachedContext}\n\n[STUDENT QUESTION]: ${text}`
+            : text,
           conversation_history: currentMessages.map(m => ({
             role: m.role === 'ai' ? 'assistant' : 'user',
             content: m.content,
@@ -109,30 +119,56 @@ export default function ClassroomLM() {
         }),
       });
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
-      if (data.student_model) {
-        setStudentModel(data.student_model);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let streamed = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const frames = buffer.split('\n\n');
+        buffer = frames.pop() ?? '';
+
+        for (const frame of frames) {
+          const line = frame.trim();
+          if (!line.startsWith('data:')) continue;
+
+          let evt: any;
+          try {
+            evt = JSON.parse(line.slice(5).trim());
+          } catch {
+            continue;
+          }
+
+          if (evt.type === 'status') {
+            if (!streamed) patchAi({ content: evt.text });
+          } else if (evt.type === 'meta') {
+            if (evt.student_model) setStudentModel(evt.student_model);
+            patchAi({
+              source: (evt.decision?.toLowerCase() as MessageSource) ?? 'llm',
+              diagram: evt.diagram_image || undefined,
+            });
+          } else if (evt.type === 'token') {
+            streamed += evt.text;
+            patchAi({ content: streamed });
+          } else if (evt.type === 'error') {
+            streamed += `\n\n[error: ${evt.text}]`;
+            patchAi({ content: streamed });
+          }
+        }
       }
 
-      const aiMsg: Message = {
-        id: `m-${Date.now()}-ai`,
-        role: 'ai',
-        content: data.response ?? '(no response)',
-        source: (data.decision?.toLowerCase() as MessageSource) ?? 'llm',
-        citations: [],
-        diagram: data.diagram_image || undefined,
-      };
-      updateActive(c => ({ ...c, messages: [...c.messages, aiMsg] }));
+      if (!streamed) patchAi({ content: '(no response)' });
     } catch (err) {
-      const errMsg: Message = {
-        id: `m-${Date.now()}-err`,
-        role: 'ai',
+      patchAi({
         content: `Error reaching backend: ${(err as Error).message}. Is \`uvicorn main:app\` running?`,
         source: null,
-      };
-      updateActive(c => ({ ...c, messages: [...c.messages, errMsg] }));
+      });
     } finally {
       setIsLoading(false);
     }
@@ -141,14 +177,61 @@ export default function ClassroomLM() {
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const formData = new FormData();
-    formData.append('file', file);
+
+    setIsUploading(true);
+
+    // Add a system message showing upload is in progress
+    const uploadingMsg: Message = {
+      id: `m-${Date.now()}-upload`,
+      role: 'ai',
+      content: `📎 Reading ${file.name}...`,
+      source: null,
+    };
+    updateActive(c => ({ ...c, messages: [...c.messages, uploadingMsg] }));
+
     try {
-      await fetch(`${API_BASE}/upload`, { method: 'POST', body: formData });
-      // optional: toast success
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const res = await fetch(`${API_BASE}/interpret`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+
+      if (data.status === 'success') {
+        // Store extracted text as context
+        setAttachedContext(data.extracted_text);
+
+        // Replace uploading message with success message
+        const successMsg: Message = {
+          id: `m-${Date.now()}-success`,
+          role: 'ai',
+          content: `📎 **${file.name}** uploaded successfully. I can now see the content. Ask me anything about it!`,
+          source: null,
+        };
+        updateActive(c => ({
+          ...c,
+          messages: [...c.messages.filter(m => m.id !== uploadingMsg.id), successMsg]
+        }));
+      } else {
+        throw new Error(data.message);
+      }
     } catch (err) {
-      console.error('Upload failed', err);
+      const errMsg: Message = {
+        id: `m-${Date.now()}-err`,
+        role: 'ai',
+        content: `Failed to read file: ${(err as Error).message}`,
+        source: null,
+      };
+      updateActive(c => ({
+        ...c,
+        messages: [...c.messages.filter(m => m.id !== uploadingMsg.id), errMsg]
+      }));
     } finally {
+      setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   }
@@ -211,7 +294,7 @@ export default function ClassroomLM() {
             ref={fileInputRef}
             onChange={handleUpload}
             style={{ display: 'none' }}
-            accept=".pdf,.txt,.md,.png,.jpg,.jpeg"
+            accept=".pdf,.png,.jpg,.jpeg,.gif,.webp"
           />
 
           <div className="clm-user-card">
@@ -242,10 +325,12 @@ export default function ClassroomLM() {
             <WelcomeScreen onPick={text => sendMessage(text)} />
           ) : (
             <div className="clm-messages-inner">
-              {messages.map(m => (
-                <MessageView key={m.id} m={m} />
-              ))}
-              {isLoading && <TypingBubble />}
+              {messages
+                .filter(m => !(m.role === 'ai' && m.content === ''))
+                .map(m => (
+                  <MessageView key={m.id} m={m} />
+                ))}
+              {isLoading && messages[messages.length - 1]?.content === '' && <TypingBubble />}
               <div ref={messagesEndRef} />
             </div>
           )}
@@ -271,8 +356,10 @@ export default function ClassroomLM() {
                 className="clm-icon-btn"
                 onClick={() => fileInputRef.current?.click()}
                 title="Attach file"
+                disabled={isUploading}
+                style={{ opacity: isUploading ? 0.5 : 1 }}
               >
-                <AttachIcon />
+                {isUploading ? '⏳' : <AttachIcon />}
               </button>
               <button
                 className="clm-send-btn"
