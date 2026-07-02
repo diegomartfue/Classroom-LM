@@ -2,7 +2,13 @@ anthropic
 chromadb
 fastapi
 langchain-text-splitters
+matplotlib
+numpy
+pint
 pydantic
 pypdf
+python-docx
 python-dotenv
+python-multipart
 sympy
+uvicorn

@@ -40,6 +40,72 @@ flowchart TD
     O -.->|feeds course context| D
 ```
 
+## Getting Started
+
+### Prerequisites
+- Python 3.9+
+- Node.js v20 (use nvm)
+- An Anthropic API key (get one at console.anthropic.com)
+
+### 1. Clone the repo
+
+```bash
+git clone https://github.com/diegomartfue/Classroom-LM.git
+cd Classroom-LM
+```
+
+### 2. Backend setup
+
+```bash
+cd backend
+pip install -r requirements.txt
+```
+
+Create a .env file with your API key (do NOT commit this file):
+
+```bash
+cat > .env << 'EOF'
+ANTHROPIC_API_KEY=your_key_here
+EOF
+```
+
+Start the backend:
+
+```bash
+uvicorn main:app
+```
+
+The backend runs at http://localhost:8000. Verify with:
+
+```bash
+curl http://localhost:8000/health
+```
+
+### 3. Frontend setup
+
+```bash
+cd frontend
+nvm use 20
+npm install --legacy-peer-deps
+npm run dev
+```
+
+The app runs at http://localhost:5173.
+
+### 4. Test the pipeline
+Send a test message to the 7-agent /tutor endpoint:
+
+```bash
+curl -X POST http://localhost:8000/tutor \
+  -H "Content-Type: application/json" \
+  -d '{"message": "A 4m beam is pinned at A and has a roller at B. A 500N downward force acts at the midpoint. Find the reactions.", "conversation_history": [], "student_model": {}}'
+```
+
+### Notes
+- The .env file is gitignored — never commit your API key
+- node_modules_old/ can be safely deleted if present
+- If npm install hangs, try: mv node_modules node_modules_old && npm install --legacy-peer-deps
+
 ## Agent Architecture
 
 | Agent | Model | Temp | Primary Role |
