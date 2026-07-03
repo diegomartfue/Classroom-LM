@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import io
 import base64
-from .fbd_renderer import render_fbd, render_schematic
+from .fbd_renderer import render_fbd, render_schematic, stack_images_vertical
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -742,6 +742,20 @@ class OrchestratorAgent:
             diagram_image = render_schematic(layout)
         return diagram_image
     
+    def _draw_created_problem(self, problem: dict) -> str:
+        """Draw a single generated problem's setup (unsolved). Returns b64 or ''."""
+        # Reuse the parser on the problem statement so we get a parsed scenario
+        stmt = problem.get("statement", "")
+        if not stmt:
+            return ""
+        parsed = self.input_parser(stmt, [])
+        visualization = self.visualizer(parsed, None)
+        img = render_fbd(visualization)
+        if not img:
+            layout = self.schematic_layout(parsed, None)
+            img = render_schematic(layout)
+        return img
+    
     
         
     def diagram_renderer(self, visualizer_output: dict, solution: dict) -> str:
@@ -818,6 +832,25 @@ class OrchestratorAgent:
         
         
         if route == "DRAW":
+            # Multi-draw: if recent context has created problems and the user
+            # says "these/them/those/all", draw one per created problem.
+            wants_multi = any(w in message.lower() for w in ("these", "them", "those", "all", "each"))
+            created_problems = _find_recent_created(conversation_history)
+            if wants_multi and created_problems:
+                imgs = [self._draw_created_problem(p) for p in created_problems]
+                stacked = stack_images_vertical(imgs)
+                if stacked:
+                    return {
+                        "response": ("Here are the setups for each problem, drawn unsolved so you can "
+                                     "work them yourself. Notice the forces on each."),
+                        "updated_student_model": student_model,
+                        "plan": {"decision": "DRAW"},
+                        "solution": None, "validation": None, "visualization": None,
+                        "diagram_image": stacked,
+                        "parsed_input": None,
+                        "route": route, "route_decision": route_decision,
+                    }
+        
             diagram_image = self.draw_only(message, conversation_history)
             if diagram_image:
                 text = ("Here's the setup drawn out — I left it unsolved so you can work the "
@@ -928,6 +961,18 @@ class OrchestratorAgent:
         route = route_decision.get("route", "PROBLEM")
         
         if route == "DRAW":
+            wants_multi = any(w in message.lower() for w in ("these", "them", "those", "all", "each"))
+            created_problems = _find_recent_created(conversation_history)
+            if wants_multi and created_problems:
+                imgs = [self._draw_created_problem(p) for p in created_problems]
+                stacked = stack_images_vertical(imgs)
+                if stacked:
+                    yield {"type": "meta", "student_model": student_model, "route": route,
+                           "decision": "DRAW", "diagram_image": stacked}
+                    yield {"type": "token", "text": ("Here are the setups for each problem, drawn "
+                            "unsolved so you can work them yourself. Notice the forces on each.")}
+                    yield {"type": "done"}
+                    return
             diagram_image = self.draw_only(message, conversation_history)
             if diagram_image:
                 text = ("Here's the setup drawn out — I left it unsolved so you can work the "
@@ -1132,3 +1177,26 @@ def _parse_json(text: str) -> dict:
         return json.loads(stripped)
     except json.JSONDecodeError as exc:
         return {"parse_error": str(exc), "raw_response": text}
+    
+    
+    
+def _find_recent_created(conversation_history: list) -> list:
+    """Look back through recent assistant turns for created practice problems.
+    The conversationalist rendered them as text, but we re-parse from the last
+    few turns by re-detecting problem statements. Returns a list of {'statement': ...}.
+    Best-effort: if nothing structured is found, returns []."""
+    # We stored created problems only in-message; reconstruct from the last
+    # assistant message that looks like generated problems.
+    for msg in reversed(conversation_history[-6:]):
+        if msg.get("role") in ("assistant", "ai"):
+            content = msg.get("content", "")
+            # crude split: each "version" or numbered problem becomes one statement
+            chunks = []
+            for line in content.split("\n"):
+                line = line.strip()
+                if line and not line.lower().startswith(("given:", "find:", "here")):
+                    chunks.append(line)
+            if chunks:
+                # group into problem-sized statements (join, then split on blank markers)
+                return [{"statement": c} for c in chunks if len(c) > 40][:3]
+    return []
