@@ -490,7 +490,7 @@ ROUTER_PROMPT = """You are the Router for a 2D dynamics tutoring system. You cla
 
 OUTPUT strict JSON:
 {
-  "route": "PROBLEM" | "CONCEPT" | "CREATE" | "SMALLTALK" | "OUT_OF_SCOPE",
+  "route": "PROBLEM" | "CONCEPT" | "CREATE" | "DRAW" | "SMALLTALK" | "OUT_OF_SCOPE",
   "rationale": "one short sentence",
   "confidence": 0.0 to 1.0
 }
@@ -501,6 +501,7 @@ ROUTE DEFINITIONS:
 - CREATE: The student asks the system to GENERATE a problem — to practice a concept ("make me a problem about projectile motion") OR to produce an easier/harder version of an existing one ("give me a harder version of this"). They want a NEW problem produced, not an existing one solved.
 - SMALLTALK: Greetings, thanks, "what can you do?", or messages with no dynamics content to act on.
 - OUT_OF_SCOPE: 3D problems, deformable bodies / stress / strain / deflection, fluids, or thermodynamics — anything outside 2D mechanics of particles and rigid bodies. (Static equilibrium is IN scope: it is the a = 0 case of dynamics.)
+- DRAW: The student explicitly asks to SEE, DRAW, or SKETCH a diagram or free-body diagram — for a problem in play, a setup they describe ("draw the FBD for a block on an incline"), or problems just generated. They want a picture, not a solution.
 
 RULES:
 - Choose exactly one route.
@@ -508,6 +509,7 @@ RULES:
 - If it both asks a concept AND presents a specific problem to solve, choose PROBLEM.
 - If it is a follow-up to a problem already being solved, choose PROBLEM.
 - When unsure between CONCEPT and SMALLTALK, choose CONCEPT.
+- If the message explicitly asks to draw/sketch/show a diagram or FBD, choose DRAW.
 
 Return ONLY the JSON object. No prose."""
 
@@ -523,6 +525,7 @@ Behavior by route:
 - SMALLTALK: Respond briefly and warmly. If asked what you can do, say you help with 2D dynamics: free-body diagrams, kinematics (position, velocity, acceleration), and kinetics (Newton's second law, work-energy, impulse-momentum). Mention you can also generate practice problems on request.
 - OUT_OF_SCOPE: Gently explain this is outside 2D dynamics (e.g. it's 3D, involves deformation/stress, or fluids/thermo), and offer a dynamics version instead. Do not attempt it.
 
+IMPORTANT: The system CAN render diagrams. Never tell the student you can't draw. If they ask for a diagram, tell them to ask directly (e.g. "draw the free-body diagram") and it will be sketched.
 TONE: Warm but not saccharine. A knowledgeable TA, not a cheerleader. Plain prose. Brief.
 
 Return only your response to the student. No JSON. No meta-commentary."""
@@ -727,6 +730,19 @@ class OrchestratorAgent:
         return _parse_json(response.content[0].text)
     
     
+    def draw_only(self, message: str, conversation_history: list) -> str:
+        """Render a diagram for an explicit draw request WITHOUT solving —
+        we draw the setup with symbolic force labels so the student can still
+        work the numbers themselves. Reuses the visualizer + both renderers."""
+        parsed = self.input_parser(message, conversation_history)
+        visualization = self.visualizer(parsed, None)   # None = don't give away solved values
+        diagram_image = render_fbd(visualization)
+        if not diagram_image:
+            layout = self.schematic_layout(parsed, None)
+            diagram_image = render_schematic(layout)
+        return diagram_image
+    
+    
         
     def diagram_renderer(self, visualizer_output: dict, solution: dict) -> str:
         """
@@ -799,6 +815,29 @@ class OrchestratorAgent:
         # 0. Route first — one cheap Haiku call decides which path to take
         route_decision = self.router(message, conversation_history)
         route = route_decision.get("route", "PROBLEM")
+        
+        
+        if route == "DRAW":
+            diagram_image = self.draw_only(message, conversation_history)
+            if diagram_image:
+                text = ("Here's the setup drawn out — I left it unsolved so you can work the "
+                        "forces yourself. What do you notice acting on the body?")
+            else:
+                text = ("I tried to sketch this but couldn't pin down the setup — can you describe "
+                        "the bodies and how they're arranged?")
+            return {
+                "response": text,
+                "updated_student_model": student_model,
+                "plan": {"decision": "DRAW"},
+                "solution": None,
+                "validation": None,
+                "visualization": None,
+                "diagram_image": diagram_image,
+                "parsed_input": None,
+                "route": route,
+                "route_decision": route_decision,
+            }
+        
         
         # CREATE path: generate a new problem (or easier/harder variants)
         if route == "CREATE":
@@ -887,6 +926,21 @@ class OrchestratorAgent:
         keep the two in sync until we refactor the shared part out (tech debt)."""
         route_decision = self.router(message, conversation_history)
         route = route_decision.get("route", "PROBLEM")
+        
+        if route == "DRAW":
+            diagram_image = self.draw_only(message, conversation_history)
+            if diagram_image:
+                text = ("Here's the setup drawn out — I left it unsolved so you can work the "
+                        "forces yourself. What do you notice acting on the body?")
+            else:
+                text = ("I tried to sketch this but couldn't pin down the setup — can you describe "
+                        "the bodies and how they're arranged?")
+            yield {"type": "meta", "student_model": student_model, "route": route,
+                   "decision": "DRAW", "diagram_image": diagram_image}
+            yield {"type": "token", "text": text}
+            yield {"type": "done"}
+            return
+        
 
         if route == "CREATE":
             created = self.creator(message, conversation_history)
