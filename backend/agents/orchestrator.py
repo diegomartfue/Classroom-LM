@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import io
 import base64
-from .fbd_renderer import render_fbd, render_schematic
+from .fbd_renderer import render_fbd, render_schematic, stack_images_vertical
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -490,7 +490,7 @@ ROUTER_PROMPT = """You are the Router for a 2D dynamics tutoring system. You cla
 
 OUTPUT strict JSON:
 {
-  "route": "PROBLEM" | "CONCEPT" | "CREATE" | "SMALLTALK" | "OUT_OF_SCOPE",
+  "route": "PROBLEM" | "CONCEPT" | "CREATE" | "DRAW" | "SMALLTALK" | "OUT_OF_SCOPE",
   "rationale": "one short sentence",
   "confidence": 0.0 to 1.0
 }
@@ -501,6 +501,7 @@ ROUTE DEFINITIONS:
 - CREATE: The student asks the system to GENERATE a problem — to practice a concept ("make me a problem about projectile motion") OR to produce an easier/harder version of an existing one ("give me a harder version of this"). They want a NEW problem produced, not an existing one solved.
 - SMALLTALK: Greetings, thanks, "what can you do?", or messages with no dynamics content to act on.
 - OUT_OF_SCOPE: 3D problems, deformable bodies / stress / strain / deflection, fluids, or thermodynamics — anything outside 2D mechanics of particles and rigid bodies. (Static equilibrium is IN scope: it is the a = 0 case of dynamics.)
+- DRAW: The student explicitly asks to SEE, DRAW, or SKETCH a diagram or free-body diagram — for a problem in play, a setup they describe ("draw the FBD for a block on an incline"), or problems just generated. They want a picture, not a solution.
 
 RULES:
 - Choose exactly one route.
@@ -508,6 +509,7 @@ RULES:
 - If it both asks a concept AND presents a specific problem to solve, choose PROBLEM.
 - If it is a follow-up to a problem already being solved, choose PROBLEM.
 - When unsure between CONCEPT and SMALLTALK, choose CONCEPT.
+- If the message explicitly asks to draw/sketch/show a diagram or FBD, choose DRAW.
 
 Return ONLY the JSON object. No prose."""
 
@@ -523,6 +525,7 @@ Behavior by route:
 - SMALLTALK: Respond briefly and warmly. If asked what you can do, say you help with 2D dynamics: free-body diagrams, kinematics (position, velocity, acceleration), and kinetics (Newton's second law, work-energy, impulse-momentum). Mention you can also generate practice problems on request.
 - OUT_OF_SCOPE: Gently explain this is outside 2D dynamics (e.g. it's 3D, involves deformation/stress, or fluids/thermo), and offer a dynamics version instead. Do not attempt it.
 
+IMPORTANT: The system CAN render diagrams. Never tell the student you can't draw. If they ask for a diagram, tell them to ask directly (e.g. "draw the free-body diagram") and it will be sketched.
 TONE: Warm but not saccharine. A knowledgeable TA, not a cheerleader. Plain prose. Brief.
 
 Return only your response to the student. No JSON. No meta-commentary."""
@@ -727,6 +730,33 @@ class OrchestratorAgent:
         return _parse_json(response.content[0].text)
     
     
+    def draw_only(self, message: str, conversation_history: list) -> str:
+        """Render a diagram for an explicit draw request WITHOUT solving —
+        we draw the setup with symbolic force labels so the student can still
+        work the numbers themselves. Reuses the visualizer + both renderers."""
+        parsed = self.input_parser(message, conversation_history)
+        visualization = self.visualizer(parsed, None)   # None = don't give away solved values
+        diagram_image = render_fbd(visualization)
+        if not diagram_image:
+            layout = self.schematic_layout(parsed, None)
+            diagram_image = render_schematic(layout)
+        return diagram_image
+    
+    def _draw_created_problem(self, problem: dict) -> str:
+        """Draw a single generated problem's setup (unsolved). Returns b64 or ''."""
+        # Reuse the parser on the problem statement so we get a parsed scenario
+        stmt = problem.get("statement", "")
+        if not stmt:
+            return ""
+        parsed = self.input_parser(stmt, [])
+        visualization = self.visualizer(parsed, None)
+        img = render_fbd(visualization)
+        if not img:
+            layout = self.schematic_layout(parsed, None)
+            img = render_schematic(layout)
+        return img
+    
+    
         
     def diagram_renderer(self, visualizer_output: dict, solution: dict) -> str:
         """
@@ -799,6 +829,48 @@ class OrchestratorAgent:
         # 0. Route first — one cheap Haiku call decides which path to take
         route_decision = self.router(message, conversation_history)
         route = route_decision.get("route", "PROBLEM")
+        
+        
+        if route == "DRAW":
+            # Multi-draw: if recent context has created problems and the user
+            # says "these/them/those/all", draw one per created problem.
+            wants_multi = any(w in message.lower() for w in ("these", "them", "those", "all", "each"))
+            created_problems = _find_recent_created(conversation_history)
+            if wants_multi and created_problems:
+                imgs = [self._draw_created_problem(p) for p in created_problems]
+                stacked = stack_images_vertical(imgs)
+                if stacked:
+                    return {
+                        "response": ("Here are the setups for each problem, drawn unsolved so you can "
+                                     "work them yourself. Notice the forces on each."),
+                        "updated_student_model": student_model,
+                        "plan": {"decision": "DRAW"},
+                        "solution": None, "validation": None, "visualization": None,
+                        "diagram_image": stacked,
+                        "parsed_input": None,
+                        "route": route, "route_decision": route_decision,
+                    }
+        
+            diagram_image = self.draw_only(message, conversation_history)
+            if diagram_image:
+                text = ("Here's the setup drawn out — I left it unsolved so you can work the "
+                        "forces yourself. What do you notice acting on the body?")
+            else:
+                text = ("I tried to sketch this but couldn't pin down the setup — can you describe "
+                        "the bodies and how they're arranged?")
+            return {
+                "response": text,
+                "updated_student_model": student_model,
+                "plan": {"decision": "DRAW"},
+                "solution": None,
+                "validation": None,
+                "visualization": None,
+                "diagram_image": diagram_image,
+                "parsed_input": None,
+                "route": route,
+                "route_decision": route_decision,
+            }
+        
         
         # CREATE path: generate a new problem (or easier/harder variants)
         if route == "CREATE":
@@ -887,6 +959,33 @@ class OrchestratorAgent:
         keep the two in sync until we refactor the shared part out (tech debt)."""
         route_decision = self.router(message, conversation_history)
         route = route_decision.get("route", "PROBLEM")
+        
+        if route == "DRAW":
+            wants_multi = any(w in message.lower() for w in ("these", "them", "those", "all", "each"))
+            created_problems = _find_recent_created(conversation_history)
+            if wants_multi and created_problems:
+                imgs = [self._draw_created_problem(p) for p in created_problems]
+                stacked = stack_images_vertical(imgs)
+                if stacked:
+                    yield {"type": "meta", "student_model": student_model, "route": route,
+                           "decision": "DRAW", "diagram_image": stacked}
+                    yield {"type": "token", "text": ("Here are the setups for each problem, drawn "
+                            "unsolved so you can work them yourself. Notice the forces on each.")}
+                    yield {"type": "done"}
+                    return
+            diagram_image = self.draw_only(message, conversation_history)
+            if diagram_image:
+                text = ("Here's the setup drawn out — I left it unsolved so you can work the "
+                        "forces yourself. What do you notice acting on the body?")
+            else:
+                text = ("I tried to sketch this but couldn't pin down the setup — can you describe "
+                        "the bodies and how they're arranged?")
+            yield {"type": "meta", "student_model": student_model, "route": route,
+                   "decision": "DRAW", "diagram_image": diagram_image}
+            yield {"type": "token", "text": text}
+            yield {"type": "done"}
+            return
+        
 
         if route == "CREATE":
             created = self.creator(message, conversation_history)
@@ -1078,3 +1177,26 @@ def _parse_json(text: str) -> dict:
         return json.loads(stripped)
     except json.JSONDecodeError as exc:
         return {"parse_error": str(exc), "raw_response": text}
+    
+    
+    
+def _find_recent_created(conversation_history: list) -> list:
+    """Look back through recent assistant turns for created practice problems.
+    The conversationalist rendered them as text, but we re-parse from the last
+    few turns by re-detecting problem statements. Returns a list of {'statement': ...}.
+    Best-effort: if nothing structured is found, returns []."""
+    # We stored created problems only in-message; reconstruct from the last
+    # assistant message that looks like generated problems.
+    for msg in reversed(conversation_history[-6:]):
+        if msg.get("role") in ("assistant", "ai"):
+            content = msg.get("content", "")
+            # crude split: each "version" or numbered problem becomes one statement
+            chunks = []
+            for line in content.split("\n"):
+                line = line.strip()
+                if line and not line.lower().startswith(("given:", "find:", "here")):
+                    chunks.append(line)
+            if chunks:
+                # group into problem-sized statements (join, then split on blank markers)
+                return [{"statement": c} for c in chunks if len(c) > 40][:3]
+    return []

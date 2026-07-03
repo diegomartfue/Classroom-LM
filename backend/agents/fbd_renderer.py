@@ -211,6 +211,45 @@ def render_schematic(layout: dict) -> str:
     return base64.b64encode(buf.read()).decode("utf-8")
 
 
+
+def stack_images_vertical(b64_images: list) -> str:
+    """Composite multiple base64 PNGs into ONE tall PNG (stacked top-to-bottom).
+    Lets us return several diagrams through the single diagram_image field.
+    Skips any empty/malformed entry. Returns '' if nothing usable."""
+    imgs = []
+    for b in b64_images:
+        if not b:
+            continue
+        try:
+            data = base64.b64decode(b)
+            imgs.append(plt.imread(io.BytesIO(data), format="png"))
+        except Exception:
+            continue
+    if not imgs:
+        return ""
+    if len(imgs) == 1:
+        # nothing to stack; re-encode the single one unchanged
+        return b64_images[[i for i, b in enumerate(b64_images) if b][0]]
+
+    width = max(im.shape[1] for im in imgs)
+    total_h = sum(im.shape[0] for im in imgs)
+    fig_w = width / 100.0
+    fig_h = total_h / 100.0
+    fig, axes = plt.subplots(len(imgs), 1, figsize=(fig_w, fig_h))
+    if len(imgs) == 1:
+        axes = [axes]
+    for ax, im in zip(axes, imgs):
+        ax.imshow(im)
+        ax.axis("off")
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0, hspace=0.05)
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", dpi=100, facecolor="white")
+    plt.close(fig)
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode("utf-8")
+
+
 if __name__ == "__main__":
     # standalone sanity check: python agents/fbd_renderer.py
     spec = {
