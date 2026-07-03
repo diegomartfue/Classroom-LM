@@ -631,7 +631,6 @@ class OrchestratorAgent:
         response = self.client.messages.create(
             model="claude-opus-4-7",
             max_tokens=2048,
-            temperature=0.4,
             system=CREATOR_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
@@ -667,7 +666,6 @@ class OrchestratorAgent:
         response = self.client.messages.create(
             model="claude-opus-4-7",
             max_tokens=512,
-            temperature=0.1,
             system=PEDAGOGICAL_PLANNER_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
@@ -708,7 +706,6 @@ class OrchestratorAgent:
         response = self.client.messages.create(
             model="claude-opus-4-7",
             max_tokens=1024,
-            temperature=0,
             system=VISUALIZER_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
