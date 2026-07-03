@@ -110,13 +110,18 @@ curl -X POST http://localhost:8000/tutor \
 
 | Agent | Model | Temp | Primary Role |
 |-------|-------|------|--------------|
-| Conversationalist | claude-sonnet-4-5 | 0.5 | Student-facing dialogue hub |
-| Input Parser | claude-haiku-4-5 (text) / claude-sonnet-4-5 (image) | 0 | Extract structured problem data |
-| Student Modeler | claude-sonnet-4-5 | 0.2 | Maintain student strengths/weaknesses model |
-| Pedagogical Planner | claude-sonnet-4-5 | 0.1 | Decide next action: solve, hint, ask, wait |
-| Solver | claude-sonnet-4-5 | 0 | Generate symbolic/numerical solution |
-| Validator | claude-sonnet-4-5 | 0 | Verify solver output via independent checks |
-| Visualizer | claude-sonnet-4-5 | 0.2 | Generate FBD diagram code |
+| Router | claude-haiku-4-5-20251001 | 0 | Classify each message into a route (PROBLEM/DRAW/CREATE/CONCEPT/SMALLTALK/OUT_OF_SCOPE) |
+| Input Parser | claude-haiku-4-5-20251001 | 0 | Extract structured problem data from text |
+| Direct Tutor | claude-sonnet-4-6 | 0.5 | Handle non-problem messages (concepts, small talk, out-of-scope) |
+| Creator | claude-opus-4-7 | 0.4 | Generate practice problems and easier/harder variants |
+| Student Modeler | claude-sonnet-4-6 | 0.2 | Maintain student strengths/weaknesses model |
+| Pedagogical Planner | claude-opus-4-7 | 0.1 | Decide next action: solve, hint, ask, wait, clarify |
+| Solver | claude-sonnet-4-6 | 0 | Generate symbolic/numerical solution |
+| Validator | claude-sonnet-4-6 | 0 | Verify solver output via independent checks |
+| Visualizer | claude-opus-4-7 | 0 | Produce structured FBD spec for the renderer |
+| Schematic Layout | claude-sonnet-4-6 | 0.2 | Lay out an approximate schematic for multi-body setups (FBD fallback) |
+| Diagram Renderer | claude-sonnet-4-6 | 0 | Generate matplotlib diagram code (streaming path) |
+| Conversationalist | claude-sonnet-4-6 | 0.5 | Student-facing dialogue voice |
 
 ## Tech Stack
 - **Frontend**: React, TypeScript, Vite
@@ -127,8 +132,9 @@ curl -X POST http://localhost:8000/tutor \
 - **Diagrams**: Matplotlib → SVG/PNG
 
 ## MVP Scope
-2D rigid body statics only:
-- Single rigid body in planar equilibrium
+2D rigid body statics and dynamics (particles and rigid bodies):
+- Single rigid body in planar equilibrium (statics)
+- 2D dynamics of particles and rigid bodies (ΣF=ma, ΣM=Iα, general plane motion)
 - Standard supports: pin, roller, fixed, cable, contact
 - Applied loads: point forces, point moments, distributed loads
 - Input: text description (v1), image input (v2 - implemented)

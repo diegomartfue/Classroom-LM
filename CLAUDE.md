@@ -67,24 +67,24 @@ npm run lint
 # Dynamics Tutor Project
 
 ## Scope (MVP)
-2D rigid body statics only. Specifically:
-- Single rigid body in planar equilibrium
+2D rigid body statics and dynamics (particles and rigid bodies). Specifically:
+- Single rigid body in planar equilibrium (statics: ΣF=0, ΣM=0)
+- 2D dynamics of particles and rigid bodies (Newton's second law: ΣF=ma, ΣM=Iα, general plane motion)
 - Standard supports: pin, roller, fixed, cable, contact
 - Applied loads: point forces, point moments, distributed loads (uniform and linear)
-- Unknowns: reaction forces, reaction moments, geometric parameters
-- OUT OF SCOPE for MVP: trusses, frames, machines, friction problems, dynamics (ma, Iα), 3D problems, deformable bodies.
+- Unknowns: reaction forces, reaction moments, accelerations, geometric parameters
+- OUT OF SCOPE for MVP: trusses, frames, machines, friction problems, 3D problems, deformable bodies.
 - Input: structured text description only for v1. Image input in v2.
 
 ## Architecture
-Seven agents: Conversationalist, Input Parser, Student Modeler, Pedagogical Planner, Solver, Validator, Visualizer.
+Twelve agents: Router, Input Parser, Direct Tutor, Creator, Student Modeler, Pedagogical Planner, Solver, Validator, Visualizer, Schematic Layout, Diagram Renderer, Conversationalist
 See docs/architecture.md for details.
 
 ## Repo layout
-- /agents - prompts and agent Python wrappers
-- /tools - SymPy solver, unit checker, plot generator
-- /evals - problem sets and grading harness
-- /traces - saved runs for debugging
-- /state - student model storage
+- /backend/agents/ - orchestrator, inline agent prompts, and the deterministic FBD/schematic renderer
+- /backend/tools/ - SymPy/pint helpers (equilibrium builder/verifier, linear solver, reaction/unit checkers) — not yet wired into the pipeline
+- /evals/ - problem sets (problems/) and ground truth (ground_truth/)
+- /docs/ - architecture.md and misconceptions.md
 
 ## Running evals
 `python -m evals.run --suite projectile_v1`
