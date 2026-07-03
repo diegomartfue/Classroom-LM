@@ -611,7 +611,7 @@ class OrchestratorAgent:
     def direct_tutor(self, message: str, route: str) -> str:
         user_content = f"Route: {route}\n\nStudent's message:\n{message}"
         response = self.client.messages.create(
-            model="claude-sonnet-4-5",
+            model="claude-sonnet-4-6",
             max_tokens=1024,
             temperature=0.5,
             system=DIRECT_TUTOR_PROMPT,
@@ -629,7 +629,7 @@ class OrchestratorAgent:
             f"Student's request:\n{message}"
         )
         response = self.client.messages.create(
-            model="claude-sonnet-4-5",
+            model="claude-opus-4-7",
             max_tokens=2048,
             temperature=0.4,
             system=CREATOR_PROMPT,
@@ -649,7 +649,7 @@ class OrchestratorAgent:
             f"Conversation history:\n{_format_history(conversation_history)}"
         )
         response = self.client.messages.create(
-            model="claude-sonnet-4-5",
+            model="claude-sonnet-4-6",
             max_tokens=1024,
             temperature=0.2,
             system=STUDENT_MODELER_PROMPT,
@@ -665,7 +665,7 @@ class OrchestratorAgent:
             f"Conversation history:\n{_format_history(conversation_history)}"
         )
         response = self.client.messages.create(
-            model="claude-sonnet-4-5",
+            model="claude-opus-4-7",
             max_tokens=512,
             temperature=0.1,
             system=PEDAGOGICAL_PLANNER_PROMPT,
@@ -676,7 +676,7 @@ class OrchestratorAgent:
     def solver(self, parsed_input: dict) -> dict:
         user_content = f"Problem to solve:\n{json.dumps(parsed_input, indent=2)}"
         response = self.client.messages.create(
-            model="claude-sonnet-4-5",
+            model="claude-sonnet-4-6",
             max_tokens=2048,
             temperature=0,
             system=SOLVER_PROMPT,
@@ -690,7 +690,7 @@ class OrchestratorAgent:
             f"Solver's solution:\n{json.dumps(solution, indent=2)}"
         )
         response = self.client.messages.create(
-            model="claude-sonnet-4-5",
+            model="claude-sonnet-4-6",
             max_tokens=1024,
             temperature=0,
             system=VALIDATOR_PROMPT,
@@ -706,7 +706,7 @@ class OrchestratorAgent:
             f"Solver solution:\n{json.dumps(solution, indent=2)}"
         )
         response = self.client.messages.create(
-            model="claude-sonnet-4-5",
+            model="claude-opus-4-7",
             max_tokens=1024,
             temperature=0,
             system=VISUALIZER_PROMPT,
@@ -721,7 +721,7 @@ class OrchestratorAgent:
             f"Solver solution (may be null):\n{json.dumps(solution, indent=2)}"
         )
         response = self.client.messages.create(
-            model="claude-sonnet-4-5",
+            model="claude-sonnet-4-6",
             max_tokens=1500,
             temperature=0.2,
             system=SCHEMATIC_LAYOUT_PROMPT,
@@ -768,7 +768,7 @@ class OrchestratorAgent:
             f"Solver solution (for reference):\n{json.dumps(solution, indent=2)}"
         )
         response = self.client.messages.create(
-            model="claude-sonnet-4-5",
+            model="claude-sonnet-4-6",
             max_tokens=3000,
             temperature=0,
             system=DIAGRAM_RENDERER_PROMPT,
@@ -811,7 +811,7 @@ class OrchestratorAgent:
         }
         user_content = f"Context bundle:\n{json.dumps(context_bundle, indent=2)}"
         response = self.client.messages.create(
-            model="claude-sonnet-4-5",
+            model="claude-sonnet-4-6",
             max_tokens=2048,
             temperature=0.5,
             system=CONVERSATIONALIST_PROMPT,
@@ -1000,7 +1000,7 @@ class OrchestratorAgent:
                 "decision": route, "diagram_image": ""}
             user_content = f"Route: {route}\n\nStudent's message:\n{message}"
             with self.client.messages.stream(
-                model="claude-sonnet-4-5", max_tokens=1024, temperature=0.5,
+                model="claude-sonnet-4-6", max_tokens=1024, temperature=0.5,
                 system=DIRECT_TUTOR_PROMPT,
                 messages=[{"role": "user", "content": user_content}],
             ) as stream:
@@ -1040,7 +1040,7 @@ class OrchestratorAgent:
         }
         user_content = f"Context bundle:\n{json.dumps(context_bundle, indent=2)}"
         with self.client.messages.stream(
-            model="claude-sonnet-4-5", max_tokens=2048, temperature=0.5,
+            model="claude-sonnet-4-6", max_tokens=2048, temperature=0.5,
             system=CONVERSATIONALIST_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         ) as stream:
