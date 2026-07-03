@@ -1,0 +1,11 @@
+{
+  "id": "p028",
+  "type": "out_of_scope",
+  "subtype": "edge_case",
+  "statement": "A simple planar truss has 5 members and 4 joints. Joint A is pinned to the wall; joint D is on a roller. A 2000 N downward load acts at joint C. Find all member forces using the method of joints.",
+  "common_student_errors": [
+    "Applying single-body equilibrium equations to the whole truss as if it were a rigid body with internal forces visible",
+    "Confusing the external reactions (solvable by statics) with the member forces (requires method of joints or sections)",
+    "Not recognizing this is a truss (multi-member connected body) and is out of scope for single rigid body statics"
+  ]
+}

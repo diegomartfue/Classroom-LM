@@ -1,0 +1,29 @@
+{
+  "id": "p017",
+  "problem_type": "rigid_body_dynamics",
+  "answers": {
+    "I_A": "1.44 kg·m²",
+    "tau_net": "21.6 N·m",
+    "alpha": "15 rad/s²"
+  },
+  "key_concepts": ["moment of inertia about end (rod)", "parallel axis theorem context", "torque of horizontal force on vertical rod", "gravity torque zero when rod is vertical"],
+  "supports": [
+    {"location": "A (top, pinned)", "type": "pin", "reaction_components": ["Ax", "Ay"]}
+  ],
+  "applied_loads": [
+    {"type": "point_force", "location": "free end B", "magnitude": 18, "direction_deg": 0, "unit": "N"},
+    {"type": "weight", "location": "center of rod", "magnitude": 29.43, "direction_deg": 270, "unit": "N"}
+  ],
+  "dynamics": {
+    "mass_kg": 3,
+    "length_m": 1.2,
+    "moment_of_inertia_kg_m2": 1.44,
+    "angular_acceleration_rad_s2": 15.0
+  },
+  "solution_steps": [
+    "I_A = ⅓·m·L² = ⅓·3·1.2² = ⅓·3·1.44 = 1.44 kg·m²",
+    "When rod is vertical, weight (downward through center) produces zero moment about A (moment arm = 0)",
+    "Torque from horizontal force at B: τ = 18·1.2 = 21.6 N·m (CCW)",
+    "ΣM_A = I_A·α → 21.6 = 1.44·α → α = 15 rad/s²"
+  ]
+}

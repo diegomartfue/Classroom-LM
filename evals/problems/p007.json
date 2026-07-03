@@ -1,0 +1,11 @@
+{
+  "id": "p007",
+  "type": "statics",
+  "subtype": "cantilever",
+  "statement": "A weightless cantilever beam is fixed at A (x=0) and free at B (x=5 m). A linearly varying (triangular) distributed load acts downward: zero intensity at A, increasing to 600 N/m at B. Find the reaction force and reaction moment at A.",
+  "common_student_errors": [
+    "Using the peak intensity (600 N/m) as the resultant magnitude instead of computing the area of the triangle: F = 0.5·600·5 = 1500 N",
+    "Placing the resultant at the midpoint (x=2.5 m) instead of at 2/3 of the length from the zero end: x = 2/3·5 = 3.33 m",
+    "Applying the triangular load formula for the wrong end (1/3 from A instead of 2/3 from A)"
+  ]
+}

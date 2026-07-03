@@ -1,0 +1,11 @@
+{
+  "id": "p011",
+  "type": "dynamics",
+  "subtype": "translation",
+  "statement": "A block of mass 10 kg rests on a frictionless horizontal surface. A horizontal force of 50 N is applied to the right. Find the acceleration of the block.",
+  "common_student_errors": [
+    "Including gravity or the normal force in ΣFx = ma (they act vertically and cancel out)",
+    "Forgetting to convert mass to kg if given in other units",
+    "Dividing force by g instead of mass when computing acceleration"
+  ]
+}

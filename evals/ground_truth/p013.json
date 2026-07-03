@@ -1,0 +1,31 @@
+{
+  "id": "p013",
+  "problem_type": "rigid_body_dynamics",
+  "answers": {
+    "a": "2.39 m/s² (A down, B up)",
+    "T": "59.3 N"
+  },
+  "key_concepts": ["Atwood machine", "Newton's 2nd law for each body", "kinematic constraint (same acceleration magnitude)", "single tension in massless rope"],
+  "supports": [],
+  "applied_loads": [
+    {"type": "weight", "body": "A", "magnitude": 78.48, "direction": "downward", "unit": "N"},
+    {"type": "weight", "body": "B", "magnitude": 49.05, "direction": "downward", "unit": "N"}
+  ],
+  "dynamics": {
+    "mass_A_kg": 8,
+    "mass_B_kg": 5,
+    "acceleration_m_s2": 2.39
+  },
+  "solution_steps": [
+    "For block A (taking downward as positive for A): mA·g − T = mA·a → 78.48 − T = 8a  ...(1)",
+    "For block B (taking upward as positive for B): T − mB·g = mB·a → T − 49.05 = 5a  ...(2)",
+    "Add (1)+(2): 78.48 − 49.05 = 13a → 29.43 = 13a → a = 2.264 m/s²",
+    "Recalculate: a = (mA−mB)·g/(mA+mB) = (8−5)·9.81/13 = 29.43/13 = 2.264 m/s²",
+    "T = mB·(g+a) = 5·(9.81+2.264) = 5·12.074 = 60.37 N",
+    "FINAL: a = 2.26 m/s², T = 60.4 N"
+  ],
+  "answers_corrected": {
+    "a": "2.26 m/s² (A down, B up)",
+    "T": "60.4 N"
+  }
+}

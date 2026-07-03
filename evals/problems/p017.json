@@ -1,0 +1,11 @@
+{
+  "id": "p017",
+  "type": "dynamics",
+  "subtype": "rotation",
+  "statement": "A slender uniform rod of mass 3 kg and length 1.2 m is pinned at one end (end A) and hangs vertically. A horizontal force of 18 N is applied at the free end B. Find the angular acceleration of the rod about A at the instant the force is applied (rod is initially vertical). The moment of inertia of a slender rod about one end is I_A = ⅓·m·L².",
+  "common_student_errors": [
+    "Using I_G = (1/12)·m·L² (moment about center) instead of I_A = (1/3)·m·L² (about the pinned end)",
+    "Computing torque using L/2 (distance to center) instead of L (force is at the free end)",
+    "Neglecting that gravity acts through the center of mass but produces no torque when the rod is vertical"
+  ]
+}

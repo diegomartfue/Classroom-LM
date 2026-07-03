@@ -1,0 +1,11 @@
+{
+  "id": "p029",
+  "type": "out_of_scope",
+  "subtype": "edge_case",
+  "statement": "A rectangular block (width 0.3 m, height 0.5 m, depth 0.4 m) with mass 10 kg is mounted on a rotating shaft along the z-axis. The shaft rotates at 300 rpm. Find the dynamic bearing reactions at the shaft supports due to the rotating imbalance. The center of mass is offset 5 mm from the shaft axis.",
+  "common_student_errors": [
+    "Treating this as a 2D planar problem when the rotating imbalance creates 3D force couples",
+    "Using 2D equilibrium equations for what is fundamentally a 3D dynamics problem",
+    "Not recognizing that rotating imbalance involves 3D inertia tensors and is far beyond 2D rigid body scope"
+  ]
+}

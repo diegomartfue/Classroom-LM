@@ -1,0 +1,18 @@
+{
+  "id": "p028",
+  "problem_type": "out_of_scope",
+  "answers": {
+    "verdict": "Out of scope — truss (multiple connected bodies)",
+    "reason": "Finding member forces requires analyzing each joint separately (method of joints) or cutting the truss (method of sections). This is a multi-body problem, not a single rigid body problem."
+  },
+  "key_concepts": ["truss vs. single rigid body", "method of joints", "two-force members", "out-of-scope identification"],
+  "supports": [],
+  "applied_loads": [],
+  "solution_steps": [
+    "Identify problem type: truss = multiple two-force members connected at joints.",
+    "External reactions at A and D CAN be found with 3 equilibrium equations (ΣFx, ΣFy, ΣM).",
+    "Member forces require method of joints or sections — these are internal forces of the truss system.",
+    "This problem is out of scope for a single rigid body solver.",
+    "The tutor should redirect: 'This is a truss problem (multiple connected members). Our scope is single rigid bodies. I can help you set up the external reactions, but member force analysis is beyond our current scope.'"
+  ]
+}

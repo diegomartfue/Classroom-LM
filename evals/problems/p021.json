@@ -1,0 +1,11 @@
+{
+  "id": "p021",
+  "type": "dynamics",
+  "subtype": "combined",
+  "statement": "A uniform solid disk of mass 6 kg and radius 0.4 m rolls without slipping down a 20° incline. Find the linear acceleration of the center of the disk and the friction force. I_G = ½·m·r². Use g = 9.81 m/s².",
+  "common_student_errors": [
+    "Assuming the disk slides (ignoring the rolling constraint a = α·r), which overestimates the acceleration",
+    "Neglecting that friction acts up the slope (not down) for rolling without slipping",
+    "Using I_G = m·r² instead of ½·m·r² for a solid disk"
+  ]
+}

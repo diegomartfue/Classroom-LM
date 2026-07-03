@@ -1,0 +1,23 @@
+{
+  "id": "p001",
+  "problem_type": "rigid_body_statics",
+  "answers": {
+    "Ax": "0 N",
+    "Ay": "250 N",
+    "By": "250 N"
+  },
+  "key_concepts": ["FBD", "equilibrium equations", "moment calculation", "pin vs roller reactions"],
+  "supports": [
+    {"location": "A", "type": "pin",    "x": 0, "y": 0, "reaction_components": ["Ax", "Ay"]},
+    {"location": "B", "type": "roller", "x": 4, "y": 0, "reaction_components": ["By"]}
+  ],
+  "applied_loads": [
+    {"type": "point_force", "location_x": 2, "location_y": 0, "magnitude": 500, "direction_deg": 270, "unit": "N"}
+  ],
+  "solution_steps": [
+    "Draw FBD: pin at A gives Ax (→) and Ay (↑); roller at B gives By (↑); load 500 N (↓) at x=2",
+    "ΣFx = 0 → Ax = 0",
+    "ΣM_A = 0 → By·4 − 500·2 = 0 → By = 250 N",
+    "ΣFy = 0 → Ay + 250 − 500 = 0 → Ay = 250 N"
+  ]
+}

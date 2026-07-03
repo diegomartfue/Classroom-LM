@@ -1,0 +1,37 @@
+{
+  "id": "p025",
+  "problem_type": "rigid_body_dynamics",
+  "answers": {
+    "a": "3.50 m/s² (down the incline)",
+    "f": "4.67 N (up the incline)",
+    "alpha": "23.3 rad/s²"
+  },
+  "key_concepts": ["solid sphere moment of inertia", "rolling without slipping", "general formula a = g·sinθ/(1 + I/(mr²))"],
+  "supports": [],
+  "applied_loads": [
+    {"type": "weight", "magnitude": 19.62, "direction_deg": 270, "unit": "N"},
+    {"type": "friction", "description": "static friction at contact, up the incline"}
+  ],
+  "dynamics": {
+    "mass_kg": 2,
+    "radius_m": 0.15,
+    "I_G_kg_m2": 0.018,
+    "acceleration_m_s2": 3.5,
+    "angular_acceleration_rad_s2": 23.33
+  },
+  "solution_steps": [
+    "I_G = (2/5)·m·r² = (2/5)·2·0.0225 = 0.018 kg·m²",
+    "Along slope (+ down): m·g·sin30° − f = m·a → 2·9.81·0.5 − f = 2a → 9.81 − f = 2a  ...(1)",
+    "Moment about G: f·r = I_G·α → f·0.15 = 0.018·α  ...(2)",
+    "Rolling: a = α·r → α = a/0.15  ...(3)",
+    "Substitute (3) into (2): f·0.15 = 0.018·(a/0.15) = 0.12a → f = 0.8a  ...(4)",
+    "Substitute (4) into (1): 9.81 − 0.8a = 2a → 9.81 = 2.8a → a = 3.504 m/s²",
+    "f = 0.8·3.504 = 2.803 N; α = 3.504/0.15 = 23.36 rad/s²",
+    "Verify with formula: a = g·sin30°/(1 + I/(mr²)) = 9.81·0.5/(1 + 2/5) = 4.905/1.4 = 3.504 ✓"
+  ],
+  "answers_corrected": {
+    "a": "3.50 m/s²",
+    "f": "2.80 N (up the incline)",
+    "alpha": "23.4 rad/s²"
+  }
+}

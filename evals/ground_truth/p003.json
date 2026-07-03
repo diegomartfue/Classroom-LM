@@ -1,0 +1,23 @@
+{
+  "id": "p003",
+  "problem_type": "rigid_body_statics",
+  "answers": {
+    "Ax": "0 N",
+    "Ay": "475 N",
+    "By": "525 N"
+  },
+  "key_concepts": ["FBD", "multiple point loads", "superposition in moment equation"],
+  "supports": [
+    {"location": "A", "type": "pin",    "x": 0, "y": 0, "reaction_components": ["Ax", "Ay"]},
+    {"location": "B", "type": "roller", "x": 8, "y": 0, "reaction_components": ["By"]}
+  ],
+  "applied_loads": [
+    {"type": "point_force", "location_x": 2, "location_y": 0, "magnitude": 400, "direction_deg": 270, "unit": "N"},
+    {"type": "point_force", "location_x": 5, "location_y": 0, "magnitude": 600, "direction_deg": 270, "unit": "N"}
+  ],
+  "solution_steps": [
+    "ΣFx = 0 → Ax = 0",
+    "ΣM_A = 0 → By·8 − 400·2 − 600·5 = 0 → By·8 = 800 + 3000 = 3800 → By = 475 N",
+    "ΣFy = 0 → Ay + 475 − 400 − 600 = 0 → Ay = 525 N"
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "id": "p010",
+  "problem_type": "rigid_body_statics",
+  "answers": {
+    "Ax": "0 N",
+    "Ay": "1600 N",
+    "MA": "2133 N·m (CCW)"
+  },
+  "key_concepts": ["triangular load with peak at wall", "resultant at 1/3 from high end", "fixed support"],
+  "supports": [
+    {"location": "A", "type": "fixed", "x": 0, "y": 0, "reaction_components": ["Ax", "Ay", "MA"]}
+  ],
+  "applied_loads": [
+    {"type": "distributed_linear", "location": "from x=0 to x=4", "intensity_start": 800, "intensity_end": 0,
+     "direction_deg": 270, "unit": "N/m",
+     "resultant_magnitude": 1600, "resultant_location_x": 1.333}
+  ],
+  "solution_steps": [
+    "Resultant of triangular load (peak at A): F = ½·800·4 = 1600 N",
+    "Acts at x = ⅓·4 = 1.333 m from A (1/3 from the high-intensity end)",
+    "ΣFx = 0 → Ax = 0",
+    "ΣFy = 0 → Ay − 1600 = 0 → Ay = 1600 N",
+    "ΣM_A = 0 (CCW+): MA − 1600·1.333 = 0 → MA = 2133 N·m (CCW)"
+  ]
+}

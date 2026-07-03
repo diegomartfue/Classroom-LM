@@ -1,0 +1,21 @@
+{
+  "id": "p011",
+  "problem_type": "rigid_body_dynamics",
+  "answers": {
+    "ax": "5 m/s²",
+    "N": "98.1 N"
+  },
+  "key_concepts": ["Newton's second law", "ΣFx=ma_x", "ΣFy=0 (no vertical acceleration)", "normal force"],
+  "supports": [],
+  "applied_loads": [
+    {"type": "point_force", "location_x": 0, "location_y": 0, "magnitude": 50, "direction_deg": 0, "unit": "N"}
+  ],
+  "dynamics": {
+    "mass_kg": 10,
+    "acceleration_m_s2": {"ax": 5.0, "ay": 0}
+  },
+  "solution_steps": [
+    "ΣFy = 0 → N − m·g = 0 → N = 10·9.81 = 98.1 N",
+    "ΣFx = m·ax → 50 = 10·ax → ax = 5 m/s²"
+  ]
+}

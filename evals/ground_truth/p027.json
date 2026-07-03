@@ -1,0 +1,28 @@
+{
+  "id": "p027",
+  "problem_type": "rigid_body_statics",
+  "answers": {
+    "verdict": "Statically indeterminate to the 3rd degree",
+    "unknowns": 6,
+    "equations": 3,
+    "degree_of_indeterminacy": 3
+  },
+  "key_concepts": ["fixed-fixed beam", "high degree of indeterminacy", "moment reactions at fixed ends", "requires structural analysis (slope-deflection, stiffness method)"],
+  "supports": [
+    {"location": "A", "type": "fixed", "x": 0, "y": 0, "reaction_components": ["Ax", "Ay", "MA"]},
+    {"location": "B", "type": "fixed", "x": 5, "y": 0, "reaction_components": ["Bx", "By", "MB"]}
+  ],
+  "applied_loads": [
+    {"type": "point_force", "location_x": 2, "location_y": 0, "magnitude": 1000, "direction_deg": 270, "unit": "N"}
+  ],
+  "solution_steps": [
+    "Unknowns: Ax, Ay, MA, Bx, By, MB = 6",
+    "Equilibrium equations: 3 (ΣFx, ΣFy, ΣM)",
+    "Degree of indeterminacy = 6 − 3 = 3",
+    "This requires compatibility conditions (slope and deflection = 0 at both ends)",
+    "Using the fixed-end moment formulas for a beam with off-center point load:",
+    "MA = −P·a·b²/L² = −1000·2·9/25 = −720 N·m (fixed end moments require beam theory)",
+    "MB = P·a²·b/L² = 1000·4·3/25 = 480 N·m",
+    "Note: these results require structural/beam bending theory, not rigid body statics alone."
+  ]
+}

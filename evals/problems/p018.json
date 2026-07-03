@@ -1,0 +1,11 @@
+{
+  "id": "p018",
+  "type": "dynamics",
+  "subtype": "rotation",
+  "statement": "A flywheel (solid disk) has mass 10 kg and radius 0.5 m. It spins at 120 rpm. A braking torque of 8 N·m is applied. How long does it take to stop? How many revolutions does it make before stopping?",
+  "common_student_errors": [
+    "Forgetting to convert RPM to rad/s: ω = 120·2π/60 = 4π rad/s",
+    "Using kinematics equations for linear motion (v = v0 + at) directly without the rotational analogues (ω = ω0 + αt)",
+    "Confusing angular displacement in radians with number of revolutions (must divide by 2π)"
+  ]
+}

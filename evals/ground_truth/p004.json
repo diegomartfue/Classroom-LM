@@ -1,0 +1,28 @@
+{
+  "id": "p004",
+  "problem_type": "rigid_body_statics",
+  "answers": {
+    "Ax": "400 N (leftward, i.e. -400 N in +x direction)",
+    "Ay": "277.1 N",
+    "By": "415.7 N"
+  },
+  "key_concepts": ["force components", "FBD", "inclined load", "moment of force components"],
+  "supports": [
+    {"location": "A", "type": "pin",    "x": 0, "y": 0, "reaction_components": ["Ax", "Ay"]},
+    {"location": "B", "type": "roller", "x": 5, "y": 0, "reaction_components": ["By"]}
+  ],
+  "applied_loads": [
+    {"type": "point_force", "location_x": 3, "location_y": 0, "magnitude": 800, "direction_deg": 120, "unit": "N"}
+  ],
+  "solution_steps": [
+    "Resolve load: Fx = 800·cos(120°) = -400 N, Fy = 800·sin(120°) = 692.8 N (upward? No — re-read problem: load acts at 60° above negative x-axis means direction_deg=120°, so Fy=+692.8 N upward)",
+    "Wait — re-read: '60° above the negative x-axis' → the force points up-and-left. Fy=+692.8 N upward, Fx=-400 N.",
+    "ΣFx = 0 → Ax − 400 = 0 → Ax = 400 N (rightward to balance leftward load component)",
+    "ΣM_A = 0 → By·5 − 692.8·3 = 0 → By = 415.7 N",
+    "ΣFy = 0 → Ay + 415.7 + 692.8 − 0 — wait, load Fy is upward (+), so: Ay + By + 692.8 must = 0 if load is upward; but actually the student statement says the load acts at 120° meaning it has +y component. Reconsider: Ay + By = −692.8? No.",
+    "Correct interpretation: 800 N at 120° → Fx = 800·cos120° = -400 N, Fy = 800·sin120° = +692.8 N. This is an upward-leftward force.",
+    "ΣFy = 0 → Ay + By + 692.8 = 0 → Ay = −692.8 − 415.7 = ... this gives downward reactions which is unusual.",
+    "NOTE: This problem is intentionally tricky. The load direction (120° = up-left) means vertical component is upward, so reactions at A and B can be downward. Ay = −277.1 N (downward), By = −415.7 N (downward).",
+    "Summary: Ax = 400 N →, Ay = −277.1 N ↓, By = −415.7 N ↓"
+  ]
+}

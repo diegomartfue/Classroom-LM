@@ -1,0 +1,11 @@
+{
+  "id": "p002",
+  "type": "statics",
+  "subtype": "simply_supported_beam",
+  "statement": "A simply supported beam AC has a pin at A (x=0) and a roller at C (x=6 m). A point load of 900 N acts downward at B (x=2 m from A). The beam is weightless. Find the reactions at A and C.",
+  "common_student_errors": [
+    "Placing the load at the midpoint instead of at x=2 m when computing moments",
+    "Omitting Ax from the FBD because there is no horizontal applied load",
+    "Dividing the load equally between A and C without using moment equilibrium"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "p013",
+  "type": "dynamics",
+  "subtype": "translation",
+  "statement": "Two blocks are connected by a light inextensible rope over a frictionless massless pulley. Block A (mass 8 kg) hangs vertically on the left; Block B (mass 5 kg) hangs vertically on the right. The system is released from rest. Find the acceleration of the system and the rope tension T. Use g = 9.81 m/s².",
+  "common_student_errors": [
+    "Writing separate equations with different tension values for each side of the pulley",
+    "Incorrectly assuming both weights subtract: using (mA - mB)·g = (mA + mB)·a but getting the sign wrong",
+    "Not recognizing that both blocks have the same magnitude of acceleration since the rope is inextensible"
+  ]
+}

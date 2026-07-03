@@ -1,0 +1,28 @@
+{
+  "id": "p019",
+  "problem_type": "rigid_body_dynamics",
+  "answers": {
+    "alpha": "0 rad/s² (net torque about center pin is zero by symmetry)",
+    "note": "The rod will translate downward (pin reaction carries the weight) but not rotate"
+  },
+  "key_concepts": ["symmetry argument for zero torque", "center-pinned rod", "gravity acts at center of mass", "distinction between rotation and translation"],
+  "supports": [
+    {"location": "G (center)", "type": "pin", "reaction_components": ["Gx", "Gy"]}
+  ],
+  "applied_loads": [
+    {"type": "weight", "location": "center G", "magnitude": 19.62, "direction_deg": 270, "unit": "N"}
+  ],
+  "dynamics": {
+    "mass_kg": 2,
+    "length_m": 0.8,
+    "moment_of_inertia_kg_m2": 0.1067,
+    "angular_acceleration_rad_s2": 0.0
+  },
+  "solution_steps": [
+    "I_G = (1/12)·m·L² = (1/12)·2·0.64 = 0.1067 kg·m²",
+    "Gravity acts at G (center of mass = pin location)",
+    "Torque of gravity about G = m·g × 0 = 0 (zero moment arm)",
+    "ΣM_G = I_G·α → 0 = 0.1067·α → α = 0 rad/s²",
+    "The pin carries the full weight: Gy = m·g = 19.62 N (upward)"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "p009",
+  "type": "statics",
+  "subtype": "cantilever",
+  "statement": "A weightless cantilever beam is fixed at A (x=0), free at B (x=6 m). A uniform distributed load of 200 N/m acts downward over the right half only (from x=3 m to x=6 m). An external clockwise moment of 400 N·m is applied at x=2 m. Find the reactions at A.",
+  "common_student_errors": [
+    "Placing the UDL resultant at x=3 m (start of load) rather than at the centroid x=4.5 m",
+    "Sign error on the external couple when writing ΣM_A",
+    "Forgetting that the fixed wall provides both a force reaction and a moment reaction"
+  ]
+}

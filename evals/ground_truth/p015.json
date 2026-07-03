@@ -1,0 +1,24 @@
+{
+  "id": "p015",
+  "problem_type": "rigid_body_dynamics",
+  "answers": {
+    "a": "3.68 m/s²",
+    "T": "18.4 N"
+  },
+  "key_concepts": ["connected bodies", "pulley constraint", "Newton's 2nd law for each body", "net driving force"],
+  "supports": [],
+  "applied_loads": [
+    {"type": "weight", "body": "hanging block", "magnitude": 29.43, "direction": "downward", "unit": "N"}
+  ],
+  "dynamics": {
+    "mass_table_kg": 5,
+    "mass_hanging_kg": 3,
+    "acceleration_m_s2": 3.68
+  },
+  "solution_steps": [
+    "Table block (horizontal, +x right): T = 5·a  ...(1)",
+    "Hanging block (vertical, +y down): m·g − T = 3·a → 29.43 − T = 3·a  ...(2)",
+    "Substitute (1) into (2): 29.43 − 5a = 3a → 29.43 = 8a → a = 3.678 m/s²",
+    "T = 5·3.678 = 18.39 N ≈ 18.4 N"
+  ]
+}

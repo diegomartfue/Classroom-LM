@@ -1,0 +1,19 @@
+{
+  "id": "p029",
+  "problem_type": "out_of_scope",
+  "answers": {
+    "verdict": "Out of scope — 3D dynamics problem",
+    "reason": "Rotating imbalance in 3D requires inertia tensors, products of inertia, and 3D equations of motion. This is beyond the 2D planar rigid body scope."
+  },
+  "key_concepts": ["3D vs 2D rigid body", "rotating imbalance", "inertia tensor", "dynamic balancing — out of scope"],
+  "supports": [],
+  "applied_loads": [],
+  "solution_steps": [
+    "Identify: 3D geometry (width × height × depth), rotation about an axis in 3D space.",
+    "Dynamic bearing reactions from imbalance require: F = m·e·ω² where e is eccentricity.",
+    "ω = 300·(2π/60) = 31.4 rad/s",
+    "Centrifugal force magnitude: F = m·e·ω² = 10·0.005·31.4² = 49.3 N",
+    "But distributing this to bearings requires 3D moment equations with products of inertia.",
+    "This is out of scope. Tutor response: 'This is a 3D rotating dynamics problem involving inertia tensors. Our scope covers 2D planar problems only.'"
+  ]
+}

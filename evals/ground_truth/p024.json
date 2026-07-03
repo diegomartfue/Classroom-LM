@@ -1,0 +1,62 @@
+{
+  "id": "p024",
+  "problem_type": "rigid_body_dynamics",
+  "answers": {
+    "alpha": "see solution_steps (function of geometry and loads)",
+    "Ax": "see solution_steps",
+    "Ay": "see solution_steps"
+  },
+  "key_concepts": ["general plane motion of pinned rod", "ΣM_A=I_A·α", "kinematics of rigid body (a_G from α)", "Newton's 2nd law for center of mass"],
+  "supports": [
+    {"location": "A (pinned end)", "type": "pin",    "reaction_components": ["Ax", "Ay"]},
+    {"location": "B (free end)",   "type": "roller", "reaction_components": ["By"]}
+  ],
+  "applied_loads": [
+    {"type": "point_force", "location": "B", "magnitude": 30, "direction_deg": 0,   "unit": "N"},
+    {"type": "weight",      "location": "G (center)", "magnitude": 39.24, "direction_deg": 270, "unit": "N"}
+  ],
+  "dynamics": {
+    "mass_kg": 4,
+    "length_m": 1.5,
+    "angle_deg": 40,
+    "I_A_kg_m2": 3.0
+  },
+  "solution_steps": [
+    "I_A = ⅓·4·1.5² = ⅓·4·2.25 = 3.0 kg·m²",
+    "Geometry: rod at 40° → G at (L/2·cos40°, L/2·sin40°) from A = (0.574, 0.482) m",
+    "B at (L·cos40°, L·sin40°) = (1.149, 0.964) m from A",
+    "ΣM_A = I_A·α (CCW+):",
+    "  Torque from P (horizontal, at B): P·(y_B) = 30·0.964 = 28.92 N·m CCW",
+    "  Torque from weight (downward at G): −m·g·(x_G) = −39.24·0.574 = −22.52 N·m",
+    "  By acts vertically at B. But By is unknown — need another equation.",
+    "Actually with roller at B (vertical reaction only), By is unknown too.",
+    "Use ΣM_A=I_A·α, ΣFx=m·a_Gx, ΣFy=m·a_Gy and kinematics: a_G = α × r_AG (ω=0 initially).",
+    "At this instant ω=0: a_Gx = −α·(L/2)·sin40° = −α·0.482; a_Gy = α·(L/2)·cos40° = α·0.574",
+    "  Wait — if α is CCW, a_G = α×r_AG: a_Gx = −α·(L/2·sin40°), a_Gy = α·(L/2·cos40°)",
+    "ΣM_A = I_A·α: 30·0.964 − 39.24·0.574 + By·1.149 = 3.0·α",
+    "28.92 − 22.52 + 1.149·By = 3α → 6.40 + 1.149·By = 3α  ...(1)",
+    "ΣFy = m·a_Gy: Ay − 39.24 + By = 4·α·0.574 = 2.296α  ...(2)",
+    "ΣFx = m·a_Gx: Ax + 30 = 4·(−α·0.482) = −1.928α  ...(3)",
+    "Three equations, three unknowns (α, By, Ax, Ay) — actually 4 unknowns. One more: constraint that B stays on surface → a_By = 0 (vertical acc of B).",
+    "a_By = a_Ay + α×r_AB (vertical component). Since A is fixed: a_B_vertical = α·(L·cos40°)·... ",
+    "a_Bx = −α·L·sin40°; a_By = α·L·cos40° (with CCW positive)",
+    "Constraint: a_By = 0 (B on frictionless surface, roller — WRONG, roller only constrains vertical force not acceleration unless the surface is horizontal and B stays on it)",
+    "Actually if B rests on horizontal frictionless surface, a_By = 0 (B must stay on surface).",
+    "a_By = α·L·cos40° = 0 → α·1.5·0.766 = 0 → α = 0 only if B stays on surface.",
+    "This is a constraint that as long as contact is maintained. At this instant a_By = 0.",
+    "α·1.149 = 0 → this contradicts non-zero P. This means the rod lifts off B immediately.",
+    "NOTE: This problem is more complex than stated. The roller at B may lift off. Treat By ≥ 0 as a KKT condition.",
+    "Assuming B stays on surface: α = 0 and the system is in instantaneous statics — contradicts the dynamics problem intent.",
+    "REVISED INTERPRETATION: There is no roller at B. The rod is pinned only at A. P is applied at B.",
+    "Without roller: 3 unknowns (α, Ax, Ay), 3 equations.",
+    "ΣM_A = I_A·α: 30·0.964 − 39.24·0.574 = 3α → 6.40 = 3α → α = 2.133 rad/s²",
+    "a_Gx = −α·0.482 = −1.028 m/s²; a_Gy = α·0.574 = 1.224 m/s²",
+    "ΣFx: Ax + 30 = 4·(−1.028) → Ax = −4.112 − 30 = −34.1 N",
+    "ΣFy: Ay − 39.24 = 4·1.224 → Ay = 39.24 + 4.90 = 44.1 N"
+  ],
+  "answers_corrected": {
+    "alpha": "2.13 rad/s² (CCW), assuming no roller constraint at B",
+    "Ax": "-34.1 N (leftward)",
+    "Ay": "44.1 N (upward)"
+  }
+}

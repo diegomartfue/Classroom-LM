@@ -1,0 +1,34 @@
+{
+  "id": "p022",
+  "problem_type": "rigid_body_dynamics",
+  "answers": {
+    "a": "3.33 m/s²",
+    "f": "13.3 N (opposing direction of motion at contact, i.e. backward)",
+    "alpha": "13.3 rad/s²"
+  },
+  "key_concepts": ["rolling without slipping on horizontal surface", "friction at contact causes rotation", "ΣFx=ma, ΣM_G=I_G·α, a=α·r"],
+  "supports": [],
+  "applied_loads": [
+    {"type": "point_force", "location": "center G", "magnitude": 40, "direction_deg": 0, "unit": "N"},
+    {"type": "friction", "location": "contact point", "direction": "backward (opposing tendency to slip forward)"}
+  ],
+  "dynamics": {
+    "mass_kg": 8,
+    "radius_m": 0.25,
+    "moment_of_inertia_kg_m2": 0.25,
+    "acceleration_m_s2": 3.333,
+    "angular_acceleration_rad_s2": 13.333
+  },
+  "solution_steps": [
+    "I_G = ½·8·0.25² = ½·8·0.0625 = 0.25 kg·m²",
+    "ΣFx = m·a (+ forward): P − f = m·a → 40 − f = 8a  ...(1)",
+    "ΣM_G = I_G·α (+ CCW): −f·r = I_G·α (friction at bottom, backward → CW torque = negative CCW)",
+    "Actually for rolling forward: P forward at center, friction backward at contact.",
+    "Friction backward at contact creates CW torque (negative) about G. Rolling forward means α is CW.",
+    "Taking CW as positive for α: f·r = I_G·α → f·0.25 = 0.25·α  ...(2)",
+    "Rolling: a = α·r → α = a/0.25 = 4a  ...(3)",
+    "Substitute (3) into (2): f·0.25 = 0.25·4a = a → f = 4a  ...(4)",
+    "Substitute (4) into (1): 40 − 4a = 8a → 40 = 12a → a = 3.333 m/s²",
+    "f = 4·3.333 = 13.33 N; α = 4·3.333 = 13.33 rad/s²"
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "id": "p005",
+  "problem_type": "rigid_body_statics",
+  "answers": {
+    "Ax": "0 N",
+    "Ay": "300 N",
+    "By": "900 N"
+  },
+  "key_concepts": ["FBD", "applied couple", "moment equilibrium", "couple is position-independent"],
+  "supports": [
+    {"location": "A", "type": "pin",    "x": 0, "y": 0, "reaction_components": ["Ax", "Ay"]},
+    {"location": "B", "type": "roller", "x": 6, "y": 0, "reaction_components": ["By"]}
+  ],
+  "applied_loads": [
+    {"type": "point_force",  "location_x": 4, "location_y": 0, "magnitude": 1200, "direction_deg": 270, "unit": "N"},
+    {"type": "point_moment", "location_x": 1, "location_y": 0, "magnitude": 600,  "direction": "clockwise", "unit": "N·m"}
+  ],
+  "solution_steps": [
+    "ΣFx = 0 → Ax = 0",
+    "ΣM_A = 0 (CCW+): By·6 − 1200·4 − 600 = 0  [CW couple is −600 N·m]",
+    "By·6 = 4800 + 600 = 5400 → By = 900 N",
+    "ΣFy = 0 → Ay + 900 − 1200 = 0 → Ay = 300 N"
+  ]
+}

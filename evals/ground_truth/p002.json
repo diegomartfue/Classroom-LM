@@ -1,0 +1,22 @@
+{
+  "id": "p002",
+  "problem_type": "rigid_body_statics",
+  "answers": {
+    "Ax": "0 N",
+    "Ay": "600 N",
+    "Cy": "300 N"
+  },
+  "key_concepts": ["FBD", "moment equilibrium", "asymmetric loading"],
+  "supports": [
+    {"location": "A", "type": "pin",    "x": 0, "y": 0, "reaction_components": ["Ax", "Ay"]},
+    {"location": "C", "type": "roller", "x": 6, "y": 0, "reaction_components": ["Cy"]}
+  ],
+  "applied_loads": [
+    {"type": "point_force", "location_x": 2, "location_y": 0, "magnitude": 900, "direction_deg": 270, "unit": "N"}
+  ],
+  "solution_steps": [
+    "ΣFx = 0 → Ax = 0",
+    "ΣM_A = 0 → Cy·6 − 900·2 = 0 → Cy = 300 N",
+    "ΣFy = 0 → Ay + 300 − 900 = 0 → Ay = 600 N"
+  ]
+}

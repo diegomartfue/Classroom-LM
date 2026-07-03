@@ -1,0 +1,11 @@
+{
+  "id": "p027",
+  "type": "statics",
+  "subtype": "edge_case",
+  "statement": "A beam AB (length 5 m) is fixed at both ends A (x=0) and B (x=5 m). A downward point load of 1000 N acts at x=2 m. The beam is weightless. Find the reactions at A and B.",
+  "common_student_errors": [
+    "Attempting to solve with only ΣFx=0, ΣFy=0, ΣM=0 without recognizing this is indeterminate to the 3rd degree",
+    "Confusing a fixed-fixed beam (propped cantilever) with a simply-supported beam",
+    "Writing 3 equations for 6 unknowns (Ax, Ay, MA, Bx, By, MB) and claiming a unique solution"
+  ]
+}

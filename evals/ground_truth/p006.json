@@ -1,0 +1,23 @@
+{
+  "id": "p006",
+  "problem_type": "rigid_body_statics",
+  "answers": {
+    "Ax": "0 N",
+    "Ay": "1200 N",
+    "MA": "1800 N·m (CCW)"
+  },
+  "key_concepts": ["fixed support reactions", "distributed load resultant", "centroid of uniform load"],
+  "supports": [
+    {"location": "A", "type": "fixed", "x": 0, "y": 0, "reaction_components": ["Ax", "Ay", "MA"]}
+  ],
+  "applied_loads": [
+    {"type": "distributed_uniform", "location": "from x=0 to x=3", "intensity": 400, "direction_deg": 270, "unit": "N/m",
+     "resultant_magnitude": 1200, "resultant_location_x": 1.5}
+  ],
+  "solution_steps": [
+    "Resultant of UDL: F = 400·3 = 1200 N acting downward at centroid x=1.5 m",
+    "ΣFx = 0 → Ax = 0",
+    "ΣFy = 0 → Ay − 1200 = 0 → Ay = 1200 N",
+    "ΣM_A = 0 (CCW+): MA − 1200·1.5 = 0 → MA = 1800 N·m (CCW)"
+  ]
+}

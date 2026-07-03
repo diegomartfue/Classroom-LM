@@ -1,0 +1,27 @@
+{
+  "id": "p016",
+  "problem_type": "rigid_body_dynamics",
+  "answers": {
+    "I": "0.18 kg·m²",
+    "tau": "3.6 N·m",
+    "alpha": "20 rad/s²"
+  },
+  "key_concepts": ["moment of inertia (disk)", "torque = F·r", "ΣM = I·α", "angular acceleration"],
+  "supports": [
+    {"location": "center", "type": "pin (axle)", "reaction_components": ["Ox", "Oy"]}
+  ],
+  "applied_loads": [
+    {"type": "point_force", "location": "rim", "magnitude": 12, "direction": "tangential", "unit": "N"}
+  ],
+  "dynamics": {
+    "mass_kg": 4,
+    "radius_m": 0.3,
+    "moment_of_inertia_kg_m2": 0.18,
+    "angular_acceleration_rad_s2": 20.0
+  },
+  "solution_steps": [
+    "I_disk = ½·m·r² = ½·4·0.3² = ½·4·0.09 = 0.18 kg·m²",
+    "Torque: τ = F·r = 12·0.3 = 3.6 N·m",
+    "ΣM = I·α → 3.6 = 0.18·α → α = 20 rad/s²"
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "id": "p008",
+  "problem_type": "rigid_body_statics",
+  "answers": {
+    "Ax": "0 N",
+    "Ay": "1100 N",
+    "MA": "2600 N·m (CCW)"
+  },
+  "key_concepts": ["partial distributed load", "multiple load resultants", "fixed support", "superposition"],
+  "supports": [
+    {"location": "A", "type": "fixed", "x": 0, "y": 0, "reaction_components": ["Ax", "Ay", "MA"]}
+  ],
+  "applied_loads": [
+    {"type": "distributed_uniform", "location": "from x=0 to x=2", "intensity": 300, "direction_deg": 270, "unit": "N/m",
+     "resultant_magnitude": 600, "resultant_location_x": 1.0},
+    {"type": "point_force", "location_x": 4, "location_y": 0, "magnitude": 500, "direction_deg": 270, "unit": "N"}
+  ],
+  "solution_steps": [
+    "UDL resultant: F1 = 300·2 = 600 N acting downward at x = 1.0 m",
+    "ΣFx = 0 → Ax = 0",
+    "ΣFy = 0 → Ay − 600 − 500 = 0 → Ay = 1100 N",
+    "ΣM_A = 0 (CCW+): MA − 600·1.0 − 500·4 = 0 → MA = 600 + 2000 = 2600 N·m (CCW)"
+  ]
+}
