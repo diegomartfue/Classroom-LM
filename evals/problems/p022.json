@@ -1,0 +1,11 @@
+{
+  "id": "p022",
+  "type": "dynamics",
+  "subtype": "combined",
+  "statement": "A uniform solid cylinder of mass 8 kg and radius 0.25 m rolls without slipping on a horizontal surface. A horizontal force P = 40 N is applied at the center of the cylinder. Find the linear acceleration of the center and the friction force at the contact point. I_G = ½·m·r².",
+  "common_student_errors": [
+    "Assuming no friction is needed because the surface is horizontal (friction is required to enforce rolling without slipping)",
+    "Forgetting the rolling constraint when writing the moment equation: α = a/r",
+    "Applying P and friction in the same direction rather than recognizing friction opposes slip at the contact"
+  ]
+}

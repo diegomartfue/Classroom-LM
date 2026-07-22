@@ -1,0 +1,42 @@
+{
+  "id": "p018",
+  "problem_type": "rigid_body_dynamics",
+  "answers": {
+    "alpha": "-3.2 rad/s² (deceleration)",
+    "omega_0": "4π ≈ 12.57 rad/s",
+    "t_stop": "3.93 s",
+    "revolutions": "24.7 rev"
+  },
+  "key_concepts": ["RPM to rad/s conversion", "ΣM=Iα for deceleration", "rotational kinematics", "rad to revolutions"],
+  "supports": [
+    {"location": "center axle", "type": "pin"}
+  ],
+  "applied_loads": [
+    {"type": "point_moment", "magnitude": 8, "direction": "opposing rotation (braking)", "unit": "N·m"}
+  ],
+  "dynamics": {
+    "mass_kg": 10,
+    "radius_m": 0.5,
+    "moment_of_inertia_kg_m2": 1.25,
+    "initial_omega_rad_s": 12.566,
+    "angular_acceleration_rad_s2": -3.2
+  },
+  "solution_steps": [
+    "I = ½·m·r² = ½·10·0.25 = 1.25 kg·m²",
+    "ω₀ = 120·(2π/60) = 4π = 12.566 rad/s",
+    "ΣM = I·α → −8 = 1.25·α → α = −6.4 rad/s²",
+    "Wait: α = −8/1.25 = −6.4 rad/s²",
+    "Time to stop: ω = ω₀ + α·t → 0 = 12.566 − 6.4·t → t = 1.963 s",
+    "Angular displacement: θ = ω₀·t + ½·α·t² = 12.566·1.963 + ½·(−6.4)·1.963² = 24.67 − 12.33 = 12.33 rad",
+    "Revolutions = 12.33/(2π) = 1.963 rev",
+    "CORRECTION: I = ½·10·0.5² = ½·10·0.25 = 1.25 kg·m²; α = −8/1.25 = −6.4 rad/s²; t = 12.566/6.4 = 1.963 s; θ = 12.33 rad = 1.963 rev"
+  ],
+  "answers_corrected": {
+    "I": "1.25 kg·m²",
+    "alpha": "-6.4 rad/s²",
+    "omega_0": "4π ≈ 12.57 rad/s",
+    "t_stop": "1.96 s",
+    "theta": "12.33 rad",
+    "revolutions": "1.96 rev"
+  }
+}

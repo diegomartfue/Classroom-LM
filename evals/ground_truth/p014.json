@@ -1,0 +1,31 @@
+{
+  "id": "p014",
+  "problem_type": "rigid_body_dynamics",
+  "answers": {
+    "a": "1.49 m/s² (down the incline)",
+    "N": "177.9 N",
+    "f": "53.4 N (up the incline)"
+  },
+  "key_concepts": ["kinetic friction", "inclined plane dynamics", "friction opposes motion", "normal force from perpendicular equilibrium"],
+  "supports": [],
+  "applied_loads": [
+    {"type": "weight", "magnitude": 196.2, "direction": "downward", "unit": "N"},
+    {"type": "friction", "description": "kinetic friction up the slope", "coefficient": 0.3}
+  ],
+  "dynamics": {
+    "mass_kg": 20,
+    "acceleration_m_s2": {"along_slope_downward": 1.49}
+  },
+  "solution_steps": [
+    "Perpendicular to incline: N − m·g·cos25° = 0 → N = 20·9.81·cos25° = 20·9.81·0.906 = 177.9 N",
+    "Kinetic friction: f = μk·N = 0.3·177.9 = 53.4 N (directed up the slope, opposing motion)",
+    "Along incline (+ down slope): m·g·sin25° − f = m·a",
+    "20·9.81·sin25° − 53.4 = 20·a → 20·9.81·0.423 − 53.4 = 20·a",
+    "82.94 − 53.4 = 20·a → 29.54 = 20·a → a = 1.477 ≈ 1.48 m/s²"
+  ],
+  "answers_corrected": {
+    "a": "1.48 m/s² (down the incline)",
+    "N": "177.9 N",
+    "f": "53.4 N (up the incline)"
+  }
+}

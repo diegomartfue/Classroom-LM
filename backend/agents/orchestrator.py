@@ -19,7 +19,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import io
 import base64
+import uuid
+from datetime import datetime, timezone
 from .fbd_renderer import render_fbd, render_schematic, stack_images_vertical
+from .memory import SessionMemory
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -576,6 +579,7 @@ class OrchestratorAgent:
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY is not set")
         self.client = anthropic.Anthropic(api_key=api_key)
+        self.memory = SessionMemory()
 
     # -----------------------------------------------------------------------
     # Individual agents
@@ -631,7 +635,6 @@ class OrchestratorAgent:
         response = self.client.messages.create(
             model="claude-opus-4-7",
             max_tokens=2048,
-            temperature=0.4,
             system=CREATOR_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
@@ -667,7 +670,6 @@ class OrchestratorAgent:
         response = self.client.messages.create(
             model="claude-opus-4-7",
             max_tokens=512,
-            temperature=0.1,
             system=PEDAGOGICAL_PLANNER_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
@@ -708,7 +710,6 @@ class OrchestratorAgent:
         response = self.client.messages.create(
             model="claude-opus-4-7",
             max_tokens=1024,
-            temperature=0,
             system=VISUALIZER_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
@@ -825,21 +826,97 @@ class OrchestratorAgent:
 
 
 
-    def run(self, message: str, conversation_history: list, student_model: dict) -> dict:
-        # 0. Route first — one cheap Haiku call decides which path to take
+    def run(self, message: str, conversation_history: list, student_model: dict,
+            session_id: str | None = None, student_id: str | None = None) -> dict:
+        """
+        Orchestrate one tutoring turn with file-based session memory.
+
+        Never raises to the caller: on repeated solver/validator failure or any
+        unexpected error, returns the best available response with
+        ``low_confidence=True``. Each agent's output is logged under
+        ``traces/{session_id}/`` and the student model is persisted to
+        ``state/{student_id}.json`` at the end of every turn.
+        """
+        session_id = session_id or _new_session_id()
+        student_id = student_id or "default"
+        turn_number = sum(1 for m in conversation_history if m.get("role") == "user")
+
+        try:
+            self.memory.create_session(session_id)
+        except Exception:
+            pass
+
+        try:
+            result = self._run_turn(
+                message, conversation_history, student_model,
+                session_id, student_id, turn_number,
+            )
+        except Exception as exc:  # never propagate an error to the student
+            try:
+                self.memory.log_error(
+                    session_id,
+                    error=f"unhandled pipeline exception: {exc!r}",
+                    fix_attempted="none",
+                    success=False,
+                )
+            except Exception:
+                pass
+            result = {
+                "response": ("I ran into an unexpected problem working through that. "
+                             "Could you rephrase it or add a bit more detail?"),
+                "updated_student_model": student_model,
+                "plan": {"decision": "ERROR"},
+                "solution": None,
+                "validation": None,
+                "visualization": None,
+                "diagram_image": "",
+                "parsed_input": None,
+                "route": None,
+                "route_decision": None,
+                "low_confidence": True,
+            }
+
+        # Persist the student model at the end of every turn.
+        try:
+            self.memory.save_student_model(
+                student_id, result.get("updated_student_model", student_model)
+            )
+        except Exception:
+            pass
+
+        result.setdefault("low_confidence", False)
+        result["session_id"] = session_id
+        result["turn_number"] = turn_number
+        return result
+
+    def _run_turn(self, message: str, conversation_history: list, student_model: dict,
+                  session_id: str, student_id: str, turn_number: int) -> dict:
+        """Run the routed pipeline for one turn, logging each agent's output."""
+        turn_record: dict = {"message": message, "agents": {}}
+
+        def _log(agent_name: str, output) -> None:
+            # Accumulate into a single {turn}.json, rewritten after each agent.
+            turn_record["agents"][agent_name] = output
+            try:
+                self.memory.log_turn(session_id, turn_number, turn_record)
+            except Exception:
+                pass
+
+        # 0. Route first — one cheap Haiku call decides which path to take.
         route_decision = self.router(message, conversation_history)
         route = route_decision.get("route", "PROBLEM")
-        
-        
+        turn_record["route"] = route
+        _log("router", route_decision)
+
+        # DRAW path: sketch the setup, left unsolved.
         if route == "DRAW":
-            # Multi-draw: if recent context has created problems and the user
-            # says "these/them/those/all", draw one per created problem.
             wants_multi = any(w in message.lower() for w in ("these", "them", "those", "all", "each"))
             created_problems = _find_recent_created(conversation_history)
             if wants_multi and created_problems:
                 imgs = [self._draw_created_problem(p) for p in created_problems]
                 stacked = stack_images_vertical(imgs)
                 if stacked:
+                    _log("draw_created_problems", {"count": len(created_problems)})
                     return {
                         "response": ("Here are the setups for each problem, drawn unsolved so you can "
                                      "work them yourself. Notice the forces on each."),
@@ -850,8 +927,9 @@ class OrchestratorAgent:
                         "parsed_input": None,
                         "route": route, "route_decision": route_decision,
                     }
-        
+
             diagram_image = self.draw_only(message, conversation_history)
+            _log("draw_only", {"has_image": bool(diagram_image)})
             if diagram_image:
                 text = ("Here's the setup drawn out — I left it unsolved so you can work the "
                         "forces yourself. What do you notice acting on the body?")
@@ -870,11 +948,11 @@ class OrchestratorAgent:
                 "route": route,
                 "route_decision": route_decision,
             }
-        
-        
-        # CREATE path: generate a new problem (or easier/harder variants)
+
+        # CREATE path: generate a new problem (or easier/harder variants).
         if route == "CREATE":
             created = self.creator(message, conversation_history)
+            _log("creator", created)
             return {
                 "response": _render_created_problems(created),
                 "updated_student_model": student_model,
@@ -888,9 +966,10 @@ class OrchestratorAgent:
                 "route_decision": route_decision,
             }
 
-        # Light paths: skip parser/solver/diagram machinery entirely
+        # Light paths: skip parser/solver/diagram machinery entirely.
         if route in ("CONCEPT", "SMALLTALK", "OUT_OF_SCOPE"):
             response_text = self.direct_tutor(message, route)
+            _log("direct_tutor", {"response": response_text})
             return {
                 "response": response_text,
                 "updated_student_model": student_model,  # unchanged: modeler did not run
@@ -904,24 +983,32 @@ class OrchestratorAgent:
                 "route_decision": route_decision,
             }
 
-        # PROBLEM path: the full pipeline (unchanged from before)
+        # PROBLEM path: the full pipeline.
         parsed_input = self.input_parser(message, conversation_history)
+        _log("input_parser", parsed_input)
+
         updated_student_model = self.student_modeler(parsed_input, student_model, conversation_history)
+        _log("student_modeler", updated_student_model)
+
         plan = self.pedagogical_planner(parsed_input, updated_student_model, conversation_history, raw_message=message)
+        _log("pedagogical_planner", plan)
 
         solution = None
         validation = None
         visualization = None
         diagram_image = ""
+        low_confidence = False
 
-            
         if plan.get("decision") == "SOLVE":
-            solution = self.solver(parsed_input)
-            validation = self.validator(parsed_input, solution)
+            solution, validation, low_confidence = self._solve_with_retries(
+                parsed_input, session_id, turn_number, _log
+            )
             visualization = self.visualizer(parsed_input, solution)
+            _log("visualizer", visualization)
             diagram_image = render_fbd(visualization)
             if not diagram_image:
                 layout = self.schematic_layout(parsed_input, solution)
+                _log("schematic_layout", layout)
                 diagram_image = render_schematic(layout)
 
         response_text = self.conversationalist(
@@ -933,6 +1020,7 @@ class OrchestratorAgent:
             validation=validation,
             visualization=visualization,
         )
+        _log("conversationalist", {"response": response_text})
 
         return {
             "response": response_text,
@@ -945,9 +1033,67 @@ class OrchestratorAgent:
             "parsed_input": parsed_input,
             "route": route,
             "route_decision": route_decision,
+            "low_confidence": low_confidence,
         }
-        
-        
+
+    # Retry the Solver at most this many times when the Validator returns FAIL.
+    MAX_SOLVER_ATTEMPTS = 3
+
+    def _solve_with_retries(self, parsed_input: dict, session_id: str,
+                            turn_number: int, log) -> tuple:
+        """
+        Solve then validate, retrying the Solver (up to ``MAX_SOLVER_ATTEMPTS``)
+        whenever the Validator returns FAIL, injecting the validation errors into
+        each retry. Returns ``(solution, validation, low_confidence)``.
+        """
+        solver_input = parsed_input
+        solution = None
+        validation = None
+
+        for attempt in range(1, self.MAX_SOLVER_ATTEMPTS + 1):
+            solution = self.solver(solver_input)
+            log(f"solver_attempt_{attempt}", solution)
+
+            validation = self.validator(parsed_input, solution)
+            log(f"validator_attempt_{attempt}", validation)
+
+            verdict = (validation.get("overall_verdict")
+                       or validation.get("solver_verdict")
+                       or "UNCERTAIN")
+            if verdict != "FAIL":
+                return solution, validation, False
+
+            errors = validation.get("errors_found", [])
+            is_last = attempt >= self.MAX_SOLVER_ATTEMPTS
+            try:
+                self.memory.log_error(
+                    session_id,
+                    error={"attempt": attempt, "verdict": verdict, "errors_found": errors},
+                    fix_attempted=("exhausted retries; returning best attempt"
+                                   if is_last else
+                                   "re-running solver with validation errors injected"),
+                    success=False,
+                )
+            except Exception:
+                pass
+
+            if is_last:
+                break
+
+            # Immutable copy: feed the validation errors back into the next solve.
+            solver_input = {
+                **parsed_input,
+                "validation_feedback": {
+                    "previous_attempt": attempt,
+                    "errors_found": errors,
+                    "instruction": ("Your previous solution failed independent "
+                                    "validation. Fix these specific errors and re-solve."),
+                },
+            }
+
+        # All attempts failed validation → best attempt, flagged low-confidence.
+        return solution, validation, True
+
     def run_stream(self, message: str, conversation_history: list, student_model: dict):
         """Streaming variant of run(). Generator yielding event dicts:
             {"type":"status","text":...}  progress during the silent pipeline phase
@@ -1116,6 +1262,12 @@ class OrchestratorAgent:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _new_session_id() -> str:
+    """Generate a timestamped, unique session id."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{stamp}-{uuid.uuid4().hex[:8]}"
+
 
 def _format_history(conversation_history: list) -> str:
     if not conversation_history:

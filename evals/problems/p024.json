@@ -1,0 +1,11 @@
+{
+  "id": "p024",
+  "type": "dynamics",
+  "subtype": "combined",
+  "statement": "A uniform slender rod of mass 4 kg and length 1.5 m is pinned at end A. The other end B rests on a frictionless surface (roller at B, vertical reaction only). The rod makes a 40° angle with the horizontal. A horizontal force P = 30 N is applied at B. Find the angular acceleration of the rod and the pin reaction at A at this instant. I_A = (1/3)·m·L². Use g = 9.81 m/s².",
+  "common_student_errors": [
+    "Treating this as a statics problem (setting ΣM = 0) rather than using ΣM_A = I_A·α",
+    "Omitting the inertial term m·a_G when finding pin reactions with Newton's 2nd law",
+    "Mixing up sin and cos for weight component torques with the rod at an angle"
+  ]
+}

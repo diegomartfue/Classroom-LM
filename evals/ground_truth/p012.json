@@ -1,0 +1,24 @@
+{
+  "id": "p012",
+  "problem_type": "rigid_body_dynamics",
+  "answers": {
+    "T": "103.6 N",
+    "N": "127.4 N"
+  },
+  "key_concepts": ["inclined plane", "Newton's 2nd law along slope", "normal force perpendicular to slope"],
+  "supports": [],
+  "applied_loads": [
+    {"type": "point_force", "description": "cable tension T up the incline", "direction": "parallel to slope, upward"},
+    {"type": "point_force", "description": "weight mg downward", "magnitude": 147.15, "unit": "N"}
+  ],
+  "dynamics": {
+    "mass_kg": 15,
+    "acceleration_m_s2": {"along_slope": 2.0}
+  },
+  "solution_steps": [
+    "Resolve along slope (+ up slope): T − m·g·sin30° = m·a",
+    "T − 15·9.81·0.5 = 15·2 → T − 73.6 = 30 → T = 103.6 N",
+    "Resolve perpendicular to slope: N − m·g·cos30° = 0",
+    "N = 15·9.81·cos30° = 15·9.81·0.866 = 127.4 N"
+  ]
+}

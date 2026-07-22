@@ -1,0 +1,29 @@
+{
+  "id": "p030",
+  "problem_type": "out_of_scope",
+  "answers": {
+    "verdict": "Partially out of scope — reactions are in scope, stress and deflection are out of scope",
+    "reactions_in_scope": {"Ay": "10 kN", "By": "10 kN"},
+    "stress_deflection": "out of scope (requires deformable body / mechanics of materials)"
+  },
+  "key_concepts": ["rigid body vs deformable body", "reactions (statics) vs stress/deflection (mechanics of materials)", "Euler-Bernoulli beam theory — out of scope", "partial in-scope problems"],
+  "supports": [
+    {"location": "A", "type": "pin",    "x": 0, "y": 0, "reaction_components": ["Ax", "Ay"]},
+    {"location": "B", "type": "roller", "x": 4, "y": 0, "reaction_components": ["By"]}
+  ],
+  "applied_loads": [
+    {"type": "distributed_uniform", "location": "full span", "intensity": 5000, "direction_deg": 270, "unit": "N/m",
+     "resultant_magnitude": 20000, "resultant_location_x": 2.0}
+  ],
+  "solution_steps": [
+    "IN SCOPE — Reactions:",
+    "ΣFx = 0 → Ax = 0",
+    "ΣM_A = 0 → By·4 − 20000·2 = 0 → By = 10000 N = 10 kN",
+    "ΣFy = 0 → Ay + 10000 − 20000 = 0 → Ay = 10000 N = 10 kN",
+    "OUT OF SCOPE — Bending stress requires: σ = M·c/I (Euler-Bernoulli, deformable body)",
+    "M_max at midspan = q·L²/8 = 5000·16/8 = 10000 N·m (informational only)",
+    "OUT OF SCOPE — Midspan deflection: δ = 5qL⁴/(384EI) (requires material stiffness E and I)",
+    "δ = 5·5000·256/(384·200e9·8e-6) = 3.2e6/(614400000) ≈ 5.21 mm (informational only)",
+    "Tutor response: 'I can find the support reactions using statics. For bending stress and deflection, you need mechanics of materials (deformable body theory), which is outside our scope.'"
+  ]
+}

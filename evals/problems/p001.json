@@ -1,0 +1,11 @@
+{
+  "id": "p001",
+  "type": "statics",
+  "subtype": "simply_supported_beam",
+  "statement": "A horizontal beam AB has a length of 4 m and is simply supported at A (pin) and B (roller). A single point load of 500 N acts downward at the midpoint C (2 m from A). The beam is weightless. Find the reaction forces at A and B.",
+  "common_student_errors": [
+    "Forgetting the horizontal reaction component at the pin support A",
+    "Taking moments about the wrong point, resulting in two unknowns in the moment equation",
+    "Sign error: treating the downward load as positive when the convention is positive-upward"
+  ]
+}

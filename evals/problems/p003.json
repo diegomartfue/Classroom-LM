@@ -1,0 +1,11 @@
+{
+  "id": "p003",
+  "type": "statics",
+  "subtype": "simply_supported_beam",
+  "statement": "Beam AB (length 8 m) is simply supported: pin at A (x=0), roller at B (x=8 m). Two point loads act downward: 400 N at x=2 m and 600 N at x=5 m. The beam is weightless. Find the reactions at A and B.",
+  "common_student_errors": [
+    "Summing both loads as if they act at a single location when computing moments",
+    "Computing the moment of the 600 N force using distance from B instead of from A",
+    "Forgetting to verify the answer using ΣFy = 0 after finding both reactions"
+  ]
+}

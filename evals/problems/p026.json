@@ -1,0 +1,11 @@
+{
+  "id": "p026",
+  "type": "statics",
+  "subtype": "edge_case",
+  "statement": "A beam AB (length 6 m) is supported by a pin at A (x=0), a pin at C (x=3 m), and a roller at B (x=6 m). A downward load of 600 N acts at x=4.5 m. The beam is weightless. Find the reactions. (Note: this beam is statically indeterminate.)",
+  "common_student_errors": [
+    "Attempting to solve the 4 unknowns (Ax, Ay, Cy, By) with only 3 equilibrium equations without recognizing the system is indeterminate",
+    "Dropping one support to make the problem determinate without justification",
+    "Confusing static indeterminacy with the problem being unsolvable (it requires compatibility/deflection equations)"
+  ]
+}

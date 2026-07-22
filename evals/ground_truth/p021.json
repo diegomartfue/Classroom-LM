@@ -1,0 +1,40 @@
+{
+  "id": "p021",
+  "problem_type": "rigid_body_dynamics",
+  "answers": {
+    "a": "2.24 m/s² (down the incline)",
+    "f": "8.97 N (up the incline)",
+    "alpha": "5.60 rad/s² (CW when rolling down)"
+  },
+  "key_concepts": ["rolling without slipping (a = α·r)", "3 equations: ΣFx, ΣFy, ΣM_G", "friction direction for rolling", "kinematic constraint"],
+  "supports": [],
+  "applied_loads": [
+    {"type": "weight", "magnitude": 58.86, "direction_deg": 270, "unit": "N"},
+    {"type": "friction", "description": "static friction at contact point, up the slope"}
+  ],
+  "dynamics": {
+    "mass_kg": 6,
+    "radius_m": 0.4,
+    "moment_of_inertia_kg_m2": 0.48,
+    "acceleration_m_s2": 2.243,
+    "angular_acceleration_rad_s2": 5.607
+  },
+  "solution_steps": [
+    "I_G = ½·m·r² = ½·6·0.16 = 0.48 kg·m²",
+    "Along slope (+ down): m·g·sin20° − f = m·a  ...(1)",
+    "6·9.81·0.342 − f = 6·a → 20.11 − f = 6a",
+    "Perpendicular: N − m·g·cos20° = 0 → N = 6·9.81·0.940 = 55.30 N",
+    "Moment about G (friction at contact creates CCW torque if rolling CW): f·r = I_G·α  ...(2)",
+    "f·0.4 = 0.48·α",
+    "Rolling constraint: a = α·r = α·0.4 → α = a/0.4 = 2.5a  ...(3)",
+    "Substitute (3) into (2): f·0.4 = 0.48·2.5a = 1.2a → f = 3a",
+    "Substitute into (1): 20.11 − 3a = 6a → 20.11 = 9a → a = 2.234 m/s²",
+    "f = 3·2.234 = 6.70 N; α = 2.5·2.234 = 5.585 rad/s²",
+    "CORRECTION: a = 20.11/9 = 2.234 m/s², f = 6.70 N, α = 5.59 rad/s²"
+  ],
+  "answers_corrected": {
+    "a": "2.23 m/s²",
+    "f": "6.70 N (up the incline)",
+    "alpha": "5.58 rad/s²"
+  }
+}

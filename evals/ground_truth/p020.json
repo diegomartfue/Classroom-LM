@@ -1,0 +1,42 @@
+{
+  "id": "p020",
+  "problem_type": "rigid_body_dynamics",
+  "answers": {
+    "I_A": "1.667 kg·m²",
+    "alpha": "14.7 rad/s² (CW)",
+    "Ax": "0 N",
+    "Ay": "24.5 N (upward)"
+  },
+  "key_concepts": ["moment of inertia about end (rod)", "ΣM_A = I_A·α", "Newton's 2nd law for center of mass", "tangential acceleration of G"],
+  "supports": [
+    {"location": "A (left end, pinned)", "type": "pin", "reaction_components": ["Ax", "Ay"]}
+  ],
+  "applied_loads": [
+    {"type": "weight", "location": "center G (x=0.5 m)", "magnitude": 49.05, "direction_deg": 270, "unit": "N"}
+  ],
+  "dynamics": {
+    "mass_kg": 5,
+    "length_m": 1.0,
+    "moment_of_inertia_kg_m2": 1.6667,
+    "angular_acceleration_rad_s2": 14.715,
+    "center_of_mass_x_m": 0.5
+  },
+  "solution_steps": [
+    "I_A = ⅓·m·L² = ⅓·5·1.0² = 1.667 kg·m²",
+    "ΣM_A = I_A·α (CCW+, gravity CW about A): −m·g·(L/2) = I_A·(−α)",
+    "Gravity torque about A (CW) = m·g·(L/2) = 5·9.81·0.5 = 24.525 N·m",
+    "24.525 = 1.667·α → α = 14.71 rad/s² (clockwise)",
+    "Tangential acceleration of G: a_Gt = α·(L/2) = 14.71·0.5 = 7.355 m/s² (downward at this instant)",
+    "Centripetal acceleration of G at this instant: ω=0, so a_Gc = 0",
+    "ΣFx = m·a_Gx → Ax = 0 (no horizontal acceleration of G at this instant)",
+    "ΣFy = m·a_Gy → Ay − m·g = m·(−a_Gt) → Ay − 49.05 = 5·(−7.355) = −36.775",
+    "Ay = 49.05 − 36.775 = 12.275 N ... wait: ΣFy = m·a_Gy, a_Gy = −7.355 m/s²",
+    "Ay − 49.05 = 5·(−7.355) → Ay = 49.05 − 36.775 = 12.275 N",
+    "FINAL: α = 14.7 rad/s² CW, Ax = 0 N, Ay = 12.3 N (upward)"
+  ],
+  "answers_corrected": {
+    "alpha": "14.7 rad/s² (CW)",
+    "Ax": "0 N",
+    "Ay": "12.3 N (upward)"
+  }
+}

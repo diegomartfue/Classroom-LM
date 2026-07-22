@@ -1,0 +1,28 @@
+{
+  "id": "p026",
+  "problem_type": "rigid_body_statics",
+  "answers": {
+    "verdict": "Statically indeterminate to the 1st degree",
+    "unknowns": 4,
+    "equations": 3,
+    "degree_of_indeterminacy": 1
+  },
+  "key_concepts": ["static indeterminacy", "degree of indeterminacy = unknowns − equations", "compatibility equations needed", "deflection methods (force method / three-moment theorem)"],
+  "supports": [
+    {"location": "A", "type": "pin",    "x": 0, "y": 0, "reaction_components": ["Ax", "Ay"]},
+    {"location": "C", "type": "pin",    "x": 3, "y": 0, "reaction_components": ["Cx", "Cy"]},
+    {"location": "B", "type": "roller", "x": 6, "y": 0, "reaction_components": ["By"]}
+  ],
+  "applied_loads": [
+    {"type": "point_force", "location_x": 4.5, "location_y": 0, "magnitude": 600, "direction_deg": 270, "unit": "N"}
+  ],
+  "solution_steps": [
+    "Count unknowns: Ax, Ay, Cx, Cy, By = 5 unknowns",
+    "But Cx = 0 (no horizontal load, and both pins are at same height) → effectively 4 vertical unknowns + Ax",
+    "ΣFx=0 → Ax + Cx = 0. With no horizontal load and symmetric conditions, Ax = Cx = 0.",
+    "Remaining: Ay, Cy, By — 3 unknowns, 2 equations (ΣFy, ΣM).",
+    "Degree of indeterminacy = 1. Cannot be solved with statics alone.",
+    "To solve: treat By (or Cy) as redundant, use deflection compatibility: δ_B = 0 (or δ_C = 0).",
+    "This requires beam bending (EI) — outside scope of rigid body statics."
+  ]
+}

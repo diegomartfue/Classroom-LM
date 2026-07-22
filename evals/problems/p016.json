@@ -1,0 +1,11 @@
+{
+  "id": "p016",
+  "type": "dynamics",
+  "subtype": "rotation",
+  "statement": "A uniform disk of mass 4 kg and radius 0.3 m is free to rotate about a fixed axle through its center. A tangential force of 12 N is applied at the rim. Find the angular acceleration of the disk. The moment of inertia of a disk about its center is I = ½·m·r².",
+  "common_student_errors": [
+    "Using I = m·r² (solid sphere formula) instead of I = ½·m·r² for a disk",
+    "Forgetting to multiply the force by the radius to get the torque: using τ = F instead of τ = F·r",
+    "Confusing angular acceleration α (rad/s²) with linear acceleration a (m/s²)"
+  ]
+}

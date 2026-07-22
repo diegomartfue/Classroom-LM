@@ -1,0 +1,11 @@
+{
+  "id": "p008",
+  "type": "statics",
+  "subtype": "cantilever",
+  "statement": "A weightless cantilever beam is fixed at A (x=0), free at B (x=4 m). A uniform distributed load of 300 N/m acts downward over the left half only (from x=0 to x=2 m). A point load of 500 N acts downward at the free end B (x=4 m). Find the reactions at A.",
+  "common_student_errors": [
+    "Extending the distributed load over the full beam length instead of just the first 2 m",
+    "Computing the moment of the distributed load resultant from B instead of from A",
+    "Treating the fixed support as a pin (omitting the reaction moment MA)"
+  ]
+}

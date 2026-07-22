@@ -1,0 +1,11 @@
+{
+  "id": "p030",
+  "type": "out_of_scope",
+  "subtype": "edge_case",
+  "statement": "A steel beam (E = 200 GPa, I = 8×10⁻⁶ m⁴) of length 4 m is simply supported at both ends and carries a uniform load of 5 kN/m. Find the maximum bending stress and the deflection at the midpoint.",
+  "common_student_errors": [
+    "Confusing reactions (solvable by statics) with bending stress and deflection (require beam theory: Euler-Bernoulli)",
+    "Attempting to find deflection using rigid body equations (which assume zero deformation)",
+    "Not recognizing that stress requires deformable body theory (mechanics of materials), not rigid body mechanics"
+  ]
+}

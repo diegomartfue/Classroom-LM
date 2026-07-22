@@ -1,0 +1,11 @@
+{
+  "id": "p004",
+  "type": "statics",
+  "subtype": "simply_supported_beam",
+  "statement": "A simply supported weightless beam AB (length 5 m) has a pin at A (x=0) and a roller at B (x=5 m). A point load of 800 N acts at 60° above the negative x-axis (i.e., 120° from positive x) at point C (x=3 m). Find the reactions at A and B.",
+  "common_student_errors": [
+    "Using the full 800 N magnitude for moment calculation instead of only the vertical component",
+    "Misidentifying the angle: using 60° instead of the correct 120° from positive x-axis",
+    "Ignoring the horizontal component Ax that balances the horizontal component of the applied load"
+  ]
+}

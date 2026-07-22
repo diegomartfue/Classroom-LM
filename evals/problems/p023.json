@@ -1,0 +1,11 @@
+{
+  "id": "p023",
+  "type": "dynamics",
+  "subtype": "combined",
+  "statement": "A simple Atwood-like pulley system: a disk-shaped pulley of mass M = 4 kg and radius R = 0.2 m is pivoted at its center. A rope is wrapped around its rim, and a block of mass m = 3 kg hangs from the rope. The system is released from rest. Find the acceleration of the block and the angular acceleration of the pulley. Assume the rope does not slip on the pulley. I_pulley = ½·M·R². Use g = 9.81 m/s².",
+  "common_student_errors": [
+    "Treating the pulley as massless (which gives a = g, overestimating acceleration)",
+    "Using a single equation m·g = (m + M)·a, which ignores the rotational inertia of the pulley",
+    "Forgetting the kinematic constraint: a_block = α_pulley · R"
+  ]
+}

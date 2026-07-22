@@ -1,0 +1,25 @@
+{
+  "id": "p009",
+  "problem_type": "rigid_body_statics",
+  "answers": {
+    "Ax": "0 N",
+    "Ay": "600 N",
+    "MA": "3100 N·m (CCW)"
+  },
+  "key_concepts": ["partial distributed load", "centroid location", "applied couple sign", "fixed support"],
+  "supports": [
+    {"location": "A", "type": "fixed", "x": 0, "y": 0, "reaction_components": ["Ax", "Ay", "MA"]}
+  ],
+  "applied_loads": [
+    {"type": "distributed_uniform", "location": "from x=3 to x=6", "intensity": 200, "direction_deg": 270, "unit": "N/m",
+     "resultant_magnitude": 600, "resultant_location_x": 4.5},
+    {"type": "point_moment", "location_x": 2, "location_y": 0, "magnitude": 400, "direction": "clockwise", "unit": "N·m"}
+  ],
+  "solution_steps": [
+    "UDL resultant: F = 200·3 = 600 N downward at centroid x = 3 + 3/2 = 4.5 m",
+    "ΣFx = 0 → Ax = 0",
+    "ΣFy = 0 → Ay − 600 = 0 → Ay = 600 N",
+    "ΣM_A = 0 (CCW+): MA − 600·4.5 − 400 = 0  [CW couple = −400 in CCW+ convention, so −(−400)=+400 on other side]",
+    "MA = 600·4.5 + 400 = 2700 + 400 = 3100 N·m (CCW)"
+  ]
+}

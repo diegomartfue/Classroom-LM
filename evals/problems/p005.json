@@ -1,0 +1,11 @@
+{
+  "id": "p005",
+  "type": "statics",
+  "subtype": "simply_supported_beam",
+  "statement": "A weightless beam AB (length 6 m) is pin-supported at A (x=0) and roller-supported at B (x=6 m). A downward point load of 1200 N acts at x=4 m, and a clockwise external moment of 600 N·m is applied at x=1 m. Find the reactions at A and B.",
+  "common_student_errors": [
+    "Treating the applied moment as a force and computing a moment arm for it",
+    "Forgetting that a pure couple contributes to ΣM regardless of which reference point is chosen",
+    "Sign error on the couple: clockwise couple is negative in CCW-positive convention"
+  ]
+}

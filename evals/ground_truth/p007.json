@@ -1,0 +1,25 @@
+{
+  "id": "p007",
+  "problem_type": "rigid_body_statics",
+  "answers": {
+    "Ax": "0 N",
+    "Ay": "1500 N",
+    "MA": "5000 N·m (CCW)"
+  },
+  "key_concepts": ["triangular distributed load", "resultant location at 2/3 from zero end", "fixed support moment"],
+  "supports": [
+    {"location": "A", "type": "fixed", "x": 0, "y": 0, "reaction_components": ["Ax", "Ay", "MA"]}
+  ],
+  "applied_loads": [
+    {"type": "distributed_linear", "location": "from x=0 to x=5", "intensity_start": 0, "intensity_end": 600,
+     "direction_deg": 270, "unit": "N/m",
+     "resultant_magnitude": 1500, "resultant_location_x": 3.333}
+  ],
+  "solution_steps": [
+    "Resultant of triangular load: F = ½·600·5 = 1500 N acting downward",
+    "Resultant acts at x = ⅔·5 = 3.333 m from A (2/3 from the zero-intensity end)",
+    "ΣFx = 0 → Ax = 0",
+    "ΣFy = 0 → Ay − 1500 = 0 → Ay = 1500 N",
+    "ΣM_A = 0 (CCW+): MA − 1500·3.333 = 0 → MA = 5000 N·m (CCW)"
+  ]
+}
