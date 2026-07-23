@@ -55,6 +55,7 @@ class TutorResponse(BaseModel):
     decision: str
     student_model: dict
     diagram_image: str = ""
+    route: str = ""
     metadata: dict
 
 # =============================================================================
@@ -223,6 +224,7 @@ def tutor_endpoint(request: TutorRequest):
         decision=result["plan"].get("decision", result["plan"].get("action", "UNKNOWN")),
         student_model=result["updated_student_model"],
         diagram_image=result.get("diagram_image", ""),
+        route=result.get("route", ""),
         metadata={
             "parsed_input": result["parsed_input"],
             "plan": result["plan"],

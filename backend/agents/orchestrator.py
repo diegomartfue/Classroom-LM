@@ -891,7 +891,22 @@ class OrchestratorAgent:
 
     def _run_turn(self, message: str, conversation_history: list, student_model: dict,
                   session_id: str, student_id: str, turn_number: int) -> dict:
-        """Run the routed pipeline for one turn, logging each agent's output."""
+        """
+        Router-as-orchestrator. The Router classifies the message, then the MCO
+        dispatches one of five route-specific agent pipelines. Every agent's
+        output is logged to session memory as it completes.
+
+        Routes:
+          PROBLEM             Input Parser -> Student Modeler -> Pedagogical Planner
+                              -> (if SOLVE: Solver[retry] -> Validator -> Visualizer)
+                              -> Conversationalist
+          CREATE              Student Modeler -> Pedagogical Planner -> Creator
+                              -> Validator -> Visualizer -> Conversationalist
+          DRAW                Input Parser -> Visualizer -> Schematic Layout
+                              -> Conversationalist
+          CONCEPT/SMALLTALK   Direct Tutor (single agent)
+          OUT_OF_SCOPE        Direct Tutor (explains the scope limitation)
+        """
         turn_record: dict = {"message": message, "agents": {}}
 
         def _log(agent_name: str, output) -> None:
@@ -902,71 +917,26 @@ class OrchestratorAgent:
             except Exception:
                 pass
 
-        # 0. Route first — one cheap Haiku call decides which path to take.
+        def _safe_render_fbd(spec) -> str:
+            try:
+                return render_fbd(spec) or ""
+            except Exception:
+                return ""
+
+        def _safe_render_schematic(layout) -> str:
+            try:
+                return render_schematic(layout) or ""
+            except Exception:
+                return ""
+
+        # 0. Router classifies the message. Log the route decision to memory
+        #    BEFORE the MCO dispatches to any downstream pipeline.
         route_decision = self.router(message, conversation_history)
         route = route_decision.get("route", "PROBLEM")
         turn_record["route"] = route
         _log("router", route_decision)
 
-        # DRAW path: sketch the setup, left unsolved.
-        if route == "DRAW":
-            wants_multi = any(w in message.lower() for w in ("these", "them", "those", "all", "each"))
-            created_problems = _find_recent_created(conversation_history)
-            if wants_multi and created_problems:
-                imgs = [self._draw_created_problem(p) for p in created_problems]
-                stacked = stack_images_vertical(imgs)
-                if stacked:
-                    _log("draw_created_problems", {"count": len(created_problems)})
-                    return {
-                        "response": ("Here are the setups for each problem, drawn unsolved so you can "
-                                     "work them yourself. Notice the forces on each."),
-                        "updated_student_model": student_model,
-                        "plan": {"decision": "DRAW"},
-                        "solution": None, "validation": None, "visualization": None,
-                        "diagram_image": stacked,
-                        "parsed_input": None,
-                        "route": route, "route_decision": route_decision,
-                    }
-
-            diagram_image = self.draw_only(message, conversation_history)
-            _log("draw_only", {"has_image": bool(diagram_image)})
-            if diagram_image:
-                text = ("Here's the setup drawn out — I left it unsolved so you can work the "
-                        "forces yourself. What do you notice acting on the body?")
-            else:
-                text = ("I tried to sketch this but couldn't pin down the setup — can you describe "
-                        "the bodies and how they're arranged?")
-            return {
-                "response": text,
-                "updated_student_model": student_model,
-                "plan": {"decision": "DRAW"},
-                "solution": None,
-                "validation": None,
-                "visualization": None,
-                "diagram_image": diagram_image,
-                "parsed_input": None,
-                "route": route,
-                "route_decision": route_decision,
-            }
-
-        # CREATE path: generate a new problem (or easier/harder variants).
-        if route == "CREATE":
-            created = self.creator(message, conversation_history)
-            _log("creator", created)
-            return {
-                "response": _render_created_problems(created),
-                "updated_student_model": student_model,
-                "plan": {"decision": "CREATE", "created_problems": created},
-                "solution": None,
-                "validation": None,
-                "visualization": None,
-                "diagram_image": "",
-                "parsed_input": None,
-                "route": route,
-                "route_decision": route_decision,
-            }
-
-        # Light paths: skip parser/solver/diagram machinery entirely.
+        # ---------- CONCEPT / SMALLTALK / OUT_OF_SCOPE: single Direct Tutor ----------
         if route in ("CONCEPT", "SMALLTALK", "OUT_OF_SCOPE"):
             response_text = self.direct_tutor(message, route)
             _log("direct_tutor", {"response": response_text})
@@ -981,9 +951,114 @@ class OrchestratorAgent:
                 "parsed_input": None,
                 "route": route,
                 "route_decision": route_decision,
+                "low_confidence": False,
             }
 
-        # PROBLEM path: the full pipeline.
+        # ---------- DRAW: Input Parser -> Visualizer -> Schematic Layout -> Conversationalist ----------
+        if route == "DRAW":
+            parsed_input = self.input_parser(message, conversation_history)
+            _log("input_parser", parsed_input)
+
+            visualization = self.visualizer(parsed_input, None)
+            _log("visualizer", visualization)
+
+            layout = self.schematic_layout(parsed_input, None)
+            _log("schematic_layout", layout)
+
+            diagram_image = _safe_render_fbd(visualization) or _safe_render_schematic(layout)
+
+            plan = {"decision": "DRAW"}
+            response_text = self.conversationalist(
+                student_message=message,
+                parsed_input=parsed_input,
+                student_model=student_model,
+                plan=plan,
+                solution=None,
+                validation=None,
+                visualization=visualization,
+            )
+            _log("conversationalist", {"response": response_text})
+            return {
+                "response": response_text,
+                "updated_student_model": student_model,  # unchanged: modeler did not run
+                "plan": plan,
+                "solution": None,
+                "validation": None,
+                "visualization": visualization,
+                "diagram_image": diagram_image,
+                "parsed_input": parsed_input,
+                "route": route,
+                "route_decision": route_decision,
+                "low_confidence": False,
+            }
+
+        # ---------- CREATE: Student Modeler -> Pedagogical Planner -> Creator
+        #            -> Validator -> Visualizer -> Conversationalist ----------
+        if route == "CREATE":
+            # No Input Parser on this route; give the modeler/planner minimal context.
+            create_context = {"route": "CREATE", "request": message}
+
+            # Student Modeler runs FIRST so the Creator can target weak concepts.
+            updated_student_model = self.student_modeler(
+                create_context, student_model, conversation_history
+            )
+            _log("student_modeler", updated_student_model)
+
+            plan = self.pedagogical_planner(
+                create_context, updated_student_model, conversation_history, raw_message=message
+            )
+            _log("pedagogical_planner", plan)
+
+            # Pass the student model into the Creator prompt (via the message arg,
+            # keeping creator()'s signature unchanged) so it tailors the problems
+            # to the concepts the student is struggling with.
+            creator_message = (
+                f"{message}\n\n[STUDENT MODEL — the concepts this student is struggling "
+                f"with; tailor the practice problems to target them]\n"
+                f"{json.dumps(updated_student_model, indent=2, default=str)}"
+            )
+            created = self.creator(creator_message, conversation_history)
+            _log("creator", created)
+
+            # Validate the Creator's output (quiz questions) like Solver output.
+            validation = self.validator(create_context, created)
+            _log("validator", validation)
+            verdict = (validation.get("overall_verdict")
+                       or validation.get("solver_verdict")
+                       or "UNCERTAIN")
+            low_confidence = verdict == "FAIL"
+
+            visualization = self.visualizer(create_context, created)
+            _log("visualizer", visualization)
+            diagram_image = _safe_render_fbd(visualization)
+
+            response_text = self.conversationalist(
+                student_message=message,
+                parsed_input=create_context,
+                student_model=updated_student_model,
+                plan=plan,
+                solution=created,
+                validation=validation,
+                visualization=visualization,
+            )
+            _log("conversationalist", {"response": response_text})
+            return {
+                "response": response_text,
+                "updated_student_model": updated_student_model,
+                "plan": {"decision": "CREATE", "planner": plan, "created_problems": created},
+                "solution": created,
+                "validation": validation,
+                "visualization": visualization,
+                "diagram_image": diagram_image,
+                "parsed_input": create_context,
+                "route": route,
+                "route_decision": route_decision,
+                "low_confidence": low_confidence,
+            }
+
+        # ---------- PROBLEM (default): Input Parser -> Student Modeler -> Pedagogical
+        #            Planner -> (if SOLVE: Solver[retry] -> Validator -> Visualizer)
+        #            -> Conversationalist ----------
         parsed_input = self.input_parser(message, conversation_history)
         _log("input_parser", parsed_input)
 
@@ -1005,11 +1080,7 @@ class OrchestratorAgent:
             )
             visualization = self.visualizer(parsed_input, solution)
             _log("visualizer", visualization)
-            diagram_image = render_fbd(visualization)
-            if not diagram_image:
-                layout = self.schematic_layout(parsed_input, solution)
-                _log("schematic_layout", layout)
-                diagram_image = render_schematic(layout)
+            diagram_image = _safe_render_fbd(visualization)
 
         response_text = self.conversationalist(
             student_message=message,
