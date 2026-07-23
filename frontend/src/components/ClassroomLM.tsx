@@ -79,6 +79,19 @@ async function sendMessage(overrideText?: string) {
     const text = (overrideText ?? input).trim();
     if (!text || isLoading) return;
 
+    // Capture the full prior conversation BEFORE we append the new user
+    // message and the empty AI placeholder below. This is what gets sent as
+    // conversation_history so the backend sees every previous turn. Empty
+    // placeholders (e.g. an aborted stream) are filtered so they never leak in.
+    const conversationHistory = (
+      conversations.find(c => c.id === activeId)?.messages ?? []
+    )
+      .filter(m => m.content.trim() !== '')
+      .map(m => ({
+        role: m.role === 'ai' ? 'assistant' : 'user',
+        content: m.content,
+      }));
+
     const userMsg: Message = { id: `m-${Date.now()}`, role: 'user', content: text };
 
     updateActive(c => ({
@@ -103,7 +116,6 @@ async function sendMessage(overrideText?: string) {
       }));
 
     try {
-      const currentMessages = conversations.find(c => c.id === activeId)?.messages ?? [];
       const res = await fetch(`${API_BASE}/tutor/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -111,10 +123,7 @@ async function sendMessage(overrideText?: string) {
           message: attachedContext
             ? `[DOCUMENT CONTEXT]:\n${attachedContext}\n\n[STUDENT QUESTION]: ${text}`
             : text,
-          conversation_history: currentMessages.map(m => ({
-            role: m.role === 'ai' ? 'assistant' : 'user',
-            content: m.content,
-          })),
+          conversation_history: conversationHistory,
           student_model: studentModel,
         }),
       });
