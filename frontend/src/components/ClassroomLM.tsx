@@ -382,10 +382,10 @@ async function sendMessage(overrideText?: string) {
 // ==================== Subcomponents ====================
 function WelcomeScreen({ onPick }: { onPick: (text: string) => void }) {
   const suggestions = [
-    { label: 'Concept', text: 'What reactions does a pin support provide versus a roller support?' },
-    { label: 'Problem', text: 'A 4m beam is pinned at A and has a roller at B. A 500N load acts at the midpoint. Find the reactions.' },
-    { label: 'FBD', text: 'How do I draw a free-body diagram for a beam with a distributed load?' },
-    { label: 'Review', text: 'Walk me through the steps to solve a 2D rigid body statics problem from scratch.' },
+    { label: 'Concept', text: 'What is the difference between angular velocity and angular acceleration?' },
+    { label: 'Problem', text: 'A 12 kg block slides down a 25 degree frictionless incline from rest. Find its acceleration and the normal force. Show me a worked example.' },
+    { label: 'Draw', text: 'Draw the free-body diagram for a block on a rough incline being pushed up the slope.' },
+    { label: 'Practice', text: 'Make me a practice problem about projectile motion.' },
   ];
   return (
     <div className="clm-welcome">
