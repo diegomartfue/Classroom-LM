@@ -2,7 +2,9 @@
 // Drop-in replacement for your main chat component.
 // Assumes backend endpoints: POST /query (RAG), POST /chat (general/math), POST /upload
 
-import { useState, useRef, useEffect, KeyboardEvent } from 'react';
+import { useState, useRef, useEffect, type KeyboardEvent } from 'react';
+import katex from 'katex';
+import 'katex/dist/katex.min.css';
 import './ClassroomLM.css';
 
 // ==================== Types ====================
@@ -492,10 +494,7 @@ function MessageView({ m }: { m: Message }) {
         </div>
         <div className="clm-msg-content"
           dangerouslySetInnerHTML={{
-            __html: m.content
-              .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-              .replace(/\*(.*?)\*/g, '<em>$1</em>')
-              .replace(/\n/g, '<br/>')
+            __html: m.role === 'ai' ? renderContent(m.content) : renderPlain(m.content),
           }}
         />
         {m.diagram && (
@@ -561,4 +560,55 @@ const SendIcon = () => (
 // ==================== Utils ====================
 function truncate(s: string, n: number) {
   return s.length <= n ? s : s.slice(0, n - 1) + '…';
+}
+
+// Escape a raw string for safe insertion into HTML (used when KaTeX fails so
+// we surface the original snippet as text instead of markup).
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+// Lightweight plain-text formatting: bold, italic, and newlines. This is the
+// fallback for any non-math content (and preserves the prior render behavior).
+function renderPlain(text: string): string {
+  return text
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+    .replace(/\n/g, '<br/>');
+}
+
+// Matches block math ($$...$$) first, then inline math ($...$). The capturing
+// group makes String.prototype.split keep the delimited math segments so we
+// can render them separately from the surrounding text.
+const MATH_SPLIT = /(\$\$[\s\S]+?\$\$|\$[^$\n]+?\$)/g;
+
+// Render a message body, turning $...$ into inline math and $$...$$ into
+// display math via KaTeX, and leaving everything else as plain (lightly
+// formatted) text. Malformed math never crashes the render: KaTeX runs with
+// throwOnError:false, and any unexpected failure falls back to the raw snippet.
+function renderContent(text: string): string {
+  return text
+    .split(MATH_SPLIT)
+    .map(part => {
+      if (!part) return '';
+      const isBlock = part.length >= 4 && part.startsWith('$$') && part.endsWith('$$');
+      const isInline = !isBlock && part.length >= 2 && part.startsWith('$') && part.endsWith('$');
+      if (isBlock || isInline) {
+        const tex = isBlock ? part.slice(2, -2) : part.slice(1, -1);
+        try {
+          return katex.renderToString(tex, {
+            displayMode: isBlock,
+            throwOnError: false,
+          });
+        } catch {
+          // KaTeX threw despite throwOnError:false — show the original text.
+          return escapeHtml(part);
+        }
+      }
+      return renderPlain(part);
+    })
+    .join('');
 }
