@@ -27,17 +27,53 @@ interface Conversation {
 // ==================== Backend config ====================
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
 
-// ==================== Component ====================
-export default function ClassroomLM() {
-  const [conversations, setConversations] = useState<Conversation[]>(() => [
+// ==================== Session persistence ====================
+// Conversations (and thus the conversation_history sent to /tutor) are backed
+// by sessionStorage so the full accumulated history survives page reloads for
+// as long as the browser session (tab) stays open, and is cleared once it is
+// closed. All access is wrapped in try/catch so unavailable or full storage
+// degrades gracefully to plain in-memory state.
+const STORAGE_KEY = 'classroomlm:conversations';
+const ACTIVE_KEY = 'classroomlm:activeId';
+
+function defaultConversations(): Conversation[] {
+  return [
     {
       id: 'seed-1',
       title: "Newton's laws & friction problem",
       messages: [],
       updatedAt: Date.now(),
     },
-  ]);
-  const [activeId, setActiveId] = useState<string>('seed-1');
+  ];
+}
+
+function loadConversations(): Conversation[] {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed as Conversation[];
+    }
+  } catch {
+    // corrupt or unavailable storage — fall through to defaults
+  }
+  return defaultConversations();
+}
+
+function loadActiveId(conversations: Conversation[]): string {
+  try {
+    const stored = sessionStorage.getItem(ACTIVE_KEY);
+    if (stored && conversations.some(c => c.id === stored)) return stored;
+  } catch {
+    // ignore and fall back to the first conversation
+  }
+  return conversations[0]?.id ?? 'seed-1';
+}
+
+// ==================== Component ====================
+export default function ClassroomLM() {
+  const [conversations, setConversations] = useState<Conversation[]>(loadConversations);
+  const [activeId, setActiveId] = useState<string>(() => loadActiveId(loadConversations()));
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [attachedContext, setAttachedContext] = useState<string>('');
@@ -54,6 +90,25 @@ export default function ClassroomLM() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length]);
+
+  // Persist the accumulated conversations (and the active one) to
+  // sessionStorage on every change so history survives reloads within the
+  // browser session.
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(conversations));
+    } catch {
+      // storage full/unavailable — keep going with in-memory state only
+    }
+  }, [conversations]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(ACTIVE_KEY, activeId);
+    } catch {
+      // ignore — non-persisted active id still works in-memory
+    }
+  }, [activeId]);
 
   // ==================== Handlers ====================
   function updateActive(updater: (c: Conversation) => Conversation) {
