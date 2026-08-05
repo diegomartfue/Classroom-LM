@@ -5,11 +5,11 @@ Inspired by MCP-SIM's session model: every tutoring session gets a directory
 under ``traces/`` holding one JSON file per turn plus an append-only
 ``errors.jsonl`` log, and per-student state is persisted under ``state/``.
 
-Layout (relative to the process working directory):
+Layout (anchored to the backend directory, independent of the process CWD):
 
-    traces/{session_id}/{turn}.json     one record per conversation turn
-    traces/{session_id}/errors.jsonl    append-only validator/solver errors
-    state/{student_id}.json             latest student model
+    <backend>/traces/{session_id}/{turn}.json     one record per conversation turn
+    <backend>/traces/{session_id}/errors.jsonl    append-only validator/solver errors
+    <backend>/state/{student_id}.json             latest student model
 
 All methods are defensive: they create directories on demand and never raise
 for a missing read target (``get_*`` helpers return empty defaults instead).
@@ -23,6 +23,13 @@ from datetime import datetime, timezone
 
 # Restrict ids to a safe character set to avoid path traversal / odd filenames.
 _SAFE_ID = re.compile(r"[^A-Za-z0-9._-]")
+
+# The backend directory (parent of this ``agents`` package). Anchoring the
+# traces/ and state/ directories here keeps them in a stable location no
+# matter which working directory uvicorn (or a test) is launched from.
+_BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_DEFAULT_BASE_DIR = os.path.join(_BACKEND_DIR, "traces")
+_DEFAULT_STATE_DIR = os.path.join(_BACKEND_DIR, "state")
 
 
 def _safe_id(identifier: str) -> str:
@@ -46,7 +53,11 @@ def _atomic_write_json(path: str, payload: object) -> None:
 class SessionMemory:
     """File-based persistence for sessions, turns, errors, and student models."""
 
-    def __init__(self, base_dir: str = "traces", state_dir: str = "state") -> None:
+    def __init__(
+        self,
+        base_dir: str = _DEFAULT_BASE_DIR,
+        state_dir: str = _DEFAULT_STATE_DIR,
+    ) -> None:
         self.base_dir = base_dir
         self.state_dir = state_dir
         os.makedirs(self.base_dir, exist_ok=True)
