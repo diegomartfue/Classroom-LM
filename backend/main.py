@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from claude_client import chat
 from sympy_solver import extract_and_solve
 from agents.orchestrator import OrchestratorAgent
+from utils.cost_tracker import estimate_route_cost, REPORT_ROUTES
 
 app = FastAPI()
 
@@ -213,6 +214,12 @@ async def upload_endpoint(file: UploadFile = File(...)):
 @app.post("/query")
 def query_endpoint(request: QueryRequest):
     return query_rag(request.question)
+
+
+@app.get("/cost-estimate")
+def cost_estimate_endpoint():
+    """Estimated API cost of a single interaction on each tutoring route."""
+    return {route: estimate_route_cost(route) for route in REPORT_ROUTES}
 
 
 @app.post("/tutor", response_model=TutorResponse)
