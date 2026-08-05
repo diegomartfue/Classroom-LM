@@ -1287,25 +1287,149 @@ class OrchestratorAgent:
                             "unsolved so you can work them yourself. Notice the forces on each.")}
                     yield {"type": "done"}
                     return
-            diagram_image = self.draw_only(message, conversation_history)
-            if diagram_image:
-                text = ("Here's the setup drawn out — I left it unsolved so you can work the "
-                        "forces yourself. What do you notice acting on the body?")
-            else:
-                text = ("I tried to sketch this but couldn't pin down the setup — can you describe "
-                        "the bodies and how they're arranged?")
+
+            # Single-diagram DRAW mirrors run(): Input Parser -> Visualizer
+            # -> Schematic Layout -> Validator[retry] -> Conversationalist.
+            yield {"type": "status", "text": "Sketching the setup…"}
+            parsed_input = self.input_parser(message, conversation_history)
+            visualization = self.visualizer(parsed_input, None)
+            layout = self.schematic_layout(parsed_input, None)
+
+            # Validator checks the FBD contains ALL forces from the parsed problem
+            # and NO extraneous ones; the focused check rides in the solution arg.
+            def _validate_fbd(viz: dict) -> dict:
+                return self.validator(
+                    parsed_input,
+                    {
+                        "task": "VALIDATE_FBD_FORCES",
+                        "check": (
+                            "Verify the free-body diagram (the visualizer output below) "
+                            "contains ALL forces present in the parsed problem and NO "
+                            "extraneous forces. Return FAIL if any required force is "
+                            "missing or any force not implied by the problem appears."
+                        ),
+                        "fbd_visualization": viz,
+                    },
+                )
+
+            validation = _validate_fbd(visualization)
+            verdict = (validation.get("overall_verdict")
+                       or validation.get("solver_verdict")
+                       or "UNCERTAIN")
+            # On FAIL, retry the Visualizer ONCE with the errors injected, re-validate.
+            if verdict == "FAIL":
+                retry_input = {
+                    **parsed_input,
+                    "validation_feedback": {
+                        "errors_found": validation.get("errors_found", []),
+                        "instruction": ("Your previous free-body diagram failed validation. "
+                                        "Fix these specific force errors (missing or extraneous "
+                                        "forces) and redraw the FBD."),
+                    },
+                }
+                visualization = self.visualizer(retry_input, None)
+                validation = _validate_fbd(visualization)
+
+            try:
+                diagram_image = render_fbd(visualization) or ""
+            except Exception:
+                diagram_image = ""
+            if not diagram_image:
+                try:
+                    diagram_image = render_schematic(layout) or ""
+                except Exception:
+                    diagram_image = ""
+
             yield {"type": "meta", "student_model": student_model, "route": route,
                    "decision": "DRAW", "diagram_image": diagram_image}
-            yield {"type": "token", "text": text}
+
+            context_bundle = {
+                "student_message": message, "parsed_input": parsed_input,
+                "student_model": student_model, "plan": {"decision": "DRAW"},
+                "solution": None, "validation": validation, "visualization": visualization,
+            }
+            user_content = f"Context bundle:\n{json.dumps(context_bundle, indent=2)}"
+            with self.client.messages.stream(
+                model="claude-sonnet-4-6", max_tokens=2048, temperature=0.5,
+                system=CONVERSATIONALIST_PROMPT,
+                messages=[{"role": "user", "content": user_content}],
+            ) as stream:
+                for chunk in stream.text_stream:
+                    yield {"type": "token", "text": chunk}
             yield {"type": "done"}
             return
         
 
         if route == "CREATE":
-            created = self.creator(message, conversation_history)
-            yield {"type": "meta", "student_model": student_model, "route": route,
-                "decision": "CREATE", "diagram_image": ""}
-            yield {"type": "token", "text": _render_created_problems(created)}
+            # Mirrors run(): Modeler -> Planner -> Identifier -> Creator
+            # -> Visualizer -> Validator -> Conversationalist.
+            create_context = {"route": "CREATE", "request": message}
+
+            yield {"type": "status", "text": "Sizing up where you're at…"}
+            updated_student_model = self.student_modeler(
+                create_context, student_model, conversation_history
+            )
+            plan = self.pedagogical_planner(
+                create_context, updated_student_model, conversation_history, raw_message=message
+            )
+
+            # Identifier: second Student Modeler pass focused (via the input
+            # payload) on this student's specific misconceptions/struggling concepts.
+            identifier_context = {
+                "route": "CREATE",
+                "request": message,
+                "task": "IDENTIFY_MISCONCEPTIONS",
+                "focus": (
+                    "Identify this specific student's concrete misconceptions and the "
+                    "particular concepts they are struggling with. Return them explicitly "
+                    "so targeted practice problems can be generated to address them."
+                ),
+                "plan": plan,
+            }
+            misconceptions = self.student_modeler(
+                identifier_context, updated_student_model, conversation_history
+            )
+
+            yield {"type": "status", "text": "Writing practice problems…"}
+            # Pass the identified misconceptions explicitly into the Creator.
+            creator_message = (
+                f"{message}\n\n"
+                f"[STUDENT MODEL — overall picture of this student]\n"
+                f"{json.dumps(updated_student_model, indent=2, default=str)}\n\n"
+                f"[MISCONCEPTIONS & STRUGGLING CONCEPTS — target the generated practice "
+                f"problems directly at these]\n"
+                f"{json.dumps(misconceptions, indent=2, default=str)}"
+            )
+            created = self.creator(creator_message, conversation_history)
+
+            # Visualizer runs BEFORE the Validator; the Validator then sees BOTH
+            # the Creator and Visualizer output (passed together via solution).
+            visualization = self.visualizer(create_context, created)
+            try:
+                diagram_image = render_fbd(visualization) or ""
+            except Exception:
+                diagram_image = ""
+            validation = self.validator(
+                create_context,
+                {"created_problems": created, "visualization": visualization},
+            )
+
+            yield {"type": "meta", "student_model": updated_student_model, "route": route,
+                   "decision": "CREATE", "diagram_image": diagram_image}
+
+            context_bundle = {
+                "student_message": message, "parsed_input": create_context,
+                "student_model": updated_student_model, "plan": plan,
+                "solution": created, "validation": validation, "visualization": visualization,
+            }
+            user_content = f"Context bundle:\n{json.dumps(context_bundle, indent=2)}"
+            with self.client.messages.stream(
+                model="claude-sonnet-4-6", max_tokens=2048, temperature=0.5,
+                system=CONVERSATIONALIST_PROMPT,
+                messages=[{"role": "user", "content": user_content}],
+            ) as stream:
+                for chunk in stream.text_stream:
+                    yield {"type": "token", "text": chunk}
             yield {"type": "done"}
             return
 

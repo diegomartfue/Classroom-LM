@@ -19,7 +19,7 @@
 import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { cn } from '@/lib/utils';
-import { useAuth, useApp } from '@/contexts';
+import { useApp } from '@/contexts';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent } from '@/components/ui/card';
@@ -209,7 +209,6 @@ interface AITutorProps {
 }
 
 export function AITutor({ onViewChange }: AITutorProps) {
-  const { user } = useAuth();
   const { sendMessageToAI, conversations: appConversations, createConversation } = useApp();
   
   const conversations = appConversations;
