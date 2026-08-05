@@ -900,8 +900,10 @@ class OrchestratorAgent:
           PROBLEM             Input Parser -> Student Modeler -> Pedagogical Planner
                               -> (if SOLVE: Solver[retry] -> Validator -> Visualizer)
                               -> Conversationalist
-          CREATE              Student Modeler -> Pedagogical Planner -> Creator
-                              -> Validator -> Visualizer -> Conversationalist
+          CREATE              Student Modeler (Modeler) -> Pedagogical Planner
+                              -> Student Modeler (Identifier: misconceptions)
+                              -> Creator -> Visualizer -> Validator
+                              -> Conversationalist
           DRAW                Input Parser -> Visualizer -> Schematic Layout
                               -> Conversationalist
           CONCEPT/SMALLTALK   Direct Tutor (single agent)
@@ -992,46 +994,78 @@ class OrchestratorAgent:
                 "low_confidence": False,
             }
 
-        # ---------- CREATE: Student Modeler -> Pedagogical Planner -> Creator
-        #            -> Validator -> Visualizer -> Conversationalist ----------
+        # ---------- CREATE: Modeler -> Planner -> Identifier (Student Modeler
+        #            again for misconceptions) -> Creator -> Visualizer
+        #            -> Validator -> Conversationalist ----------
         if route == "CREATE":
             # No Input Parser on this route; give the modeler/planner minimal context.
             create_context = {"route": "CREATE", "request": message}
 
-            # Student Modeler runs FIRST so the Creator can target weak concepts.
+            # 1. Modeler: build/refresh the overall student model.
             updated_student_model = self.student_modeler(
                 create_context, student_model, conversation_history
             )
             _log("student_modeler", updated_student_model)
 
+            # 2. Planner: decide the pedagogical approach for the CREATE request.
             plan = self.pedagogical_planner(
                 create_context, updated_student_model, conversation_history, raw_message=message
             )
             _log("pedagogical_planner", plan)
 
-            # Pass the student model into the Creator prompt (via the message arg,
-            # keeping creator()'s signature unchanged) so it tailors the problems
-            # to the concepts the student is struggling with.
+            # 3. Identifier: run the Student Modeler a SECOND time, focused (via the
+            #    input payload, so the agent method itself stays unchanged) on
+            #    surfacing this student's specific misconceptions and struggling
+            #    concepts so the Creator can target them.
+            identifier_context = {
+                "route": "CREATE",
+                "request": message,
+                "task": "IDENTIFY_MISCONCEPTIONS",
+                "focus": (
+                    "Identify this specific student's concrete misconceptions and the "
+                    "particular concepts they are struggling with. Return them explicitly "
+                    "so targeted practice problems can be generated to address them."
+                ),
+                "plan": plan,
+            }
+            misconceptions = self.student_modeler(
+                identifier_context, updated_student_model, conversation_history
+            )
+            _log("identifier", misconceptions)
+
+            # 4. Creator: generate practice problems, passing the identified
+            #    misconceptions explicitly (via the message arg, keeping creator()'s
+            #    signature unchanged) so the problems target them.
             creator_message = (
-                f"{message}\n\n[STUDENT MODEL — the concepts this student is struggling "
-                f"with; tailor the practice problems to target them]\n"
-                f"{json.dumps(updated_student_model, indent=2, default=str)}"
+                f"{message}\n\n"
+                f"[STUDENT MODEL — overall picture of this student]\n"
+                f"{json.dumps(updated_student_model, indent=2, default=str)}\n\n"
+                f"[MISCONCEPTIONS & STRUGGLING CONCEPTS — target the generated practice "
+                f"problems directly at these]\n"
+                f"{json.dumps(misconceptions, indent=2, default=str)}"
             )
             created = self.creator(creator_message, conversation_history)
             _log("creator", created)
 
-            # Validate the Creator's output (quiz questions) like Solver output.
-            validation = self.validator(create_context, created)
+            # 5. Visualizer: run on the Creator's output.
+            visualization = self.visualizer(create_context, created)
+            _log("visualizer", visualization)
+            diagram_image = _safe_render_fbd(visualization)
+
+            # 6. Validator: validate BOTH the Creator and the Visualizer output
+            #    (passed together via the solution arg, keeping validator()
+            #    unchanged).
+            validation = self.validator(
+                create_context,
+                {"created_problems": created, "visualization": visualization},
+            )
             _log("validator", validation)
             verdict = (validation.get("overall_verdict")
                        or validation.get("solver_verdict")
                        or "UNCERTAIN")
             low_confidence = verdict == "FAIL"
 
-            visualization = self.visualizer(create_context, created)
-            _log("visualizer", visualization)
-            diagram_image = _safe_render_fbd(visualization)
-
+            # 7. Conversationalist: compose the student-facing response.
             response_text = self.conversationalist(
                 student_message=message,
                 parsed_input=create_context,
@@ -1045,7 +1079,12 @@ class OrchestratorAgent:
             return {
                 "response": response_text,
                 "updated_student_model": updated_student_model,
-                "plan": {"decision": "CREATE", "planner": plan, "created_problems": created},
+                "plan": {
+                    "decision": "CREATE",
+                    "planner": plan,
+                    "misconceptions": misconceptions,
+                    "created_problems": created,
+                },
                 "solution": created,
                 "validation": validation,
                 "visualization": visualization,
