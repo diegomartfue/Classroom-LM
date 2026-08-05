@@ -905,7 +905,7 @@ class OrchestratorAgent:
                               -> Creator -> Visualizer -> Validator
                               -> Conversationalist
           DRAW                Input Parser -> Visualizer -> Schematic Layout
-                              -> Conversationalist
+                              -> Validator[retry] -> Conversationalist
           CONCEPT/SMALLTALK   Direct Tutor (single agent)
           OUT_OF_SCOPE        Direct Tutor (explains the scope limitation)
         """
@@ -956,7 +956,8 @@ class OrchestratorAgent:
                 "low_confidence": False,
             }
 
-        # ---------- DRAW: Input Parser -> Visualizer -> Schematic Layout -> Conversationalist ----------
+        # ---------- DRAW: Input Parser -> Visualizer -> Schematic Layout
+        #            -> Validator[retry] -> Conversationalist ----------
         if route == "DRAW":
             parsed_input = self.input_parser(message, conversation_history)
             _log("input_parser", parsed_input)
@@ -967,6 +968,63 @@ class OrchestratorAgent:
             layout = self.schematic_layout(parsed_input, None)
             _log("schematic_layout", layout)
 
+            # Validate the FBD: it must contain ALL forces from the parsed problem
+            # and NO extraneous ones. The focused check instruction rides along in
+            # the solution arg so validator() itself stays unchanged.
+            def _validate_fbd(viz: dict) -> dict:
+                return self.validator(
+                    parsed_input,
+                    {
+                        "task": "VALIDATE_FBD_FORCES",
+                        "check": (
+                            "Verify the free-body diagram (the visualizer output below) "
+                            "contains ALL forces present in the parsed problem and NO "
+                            "extraneous forces. Return FAIL if any required force is "
+                            "missing or any force not implied by the problem appears."
+                        ),
+                        "fbd_visualization": viz,
+                    },
+                )
+
+            validation = _validate_fbd(visualization)
+            _log("validator", validation)
+            verdict = (validation.get("overall_verdict")
+                       or validation.get("solver_verdict")
+                       or "UNCERTAIN")
+
+            # On FAIL, retry the Visualizer ONCE with the validation errors
+            # injected (via parsed_input), then re-validate the new FBD.
+            if verdict == "FAIL":
+                errors = validation.get("errors_found", [])
+                try:
+                    self.memory.log_error(
+                        session_id,
+                        error={"stage": "draw_fbd", "verdict": verdict, "errors_found": errors},
+                        fix_attempted="re-running visualizer with validation errors injected",
+                        success=False,
+                    )
+                except Exception:
+                    pass
+
+                retry_input = {
+                    **parsed_input,
+                    "validation_feedback": {
+                        "errors_found": errors,
+                        "instruction": ("Your previous free-body diagram failed validation. "
+                                        "Fix these specific force errors (missing or extraneous "
+                                        "forces) and redraw the FBD."),
+                    },
+                }
+                visualization = self.visualizer(retry_input, None)
+                _log("visualizer_retry", visualization)
+
+                validation = _validate_fbd(visualization)
+                _log("validator_retry", validation)
+                verdict = (validation.get("overall_verdict")
+                           or validation.get("solver_verdict")
+                           or "UNCERTAIN")
+
+            low_confidence = verdict == "FAIL"
             diagram_image = _safe_render_fbd(visualization) or _safe_render_schematic(layout)
 
             plan = {"decision": "DRAW"}
@@ -976,7 +1034,7 @@ class OrchestratorAgent:
                 student_model=student_model,
                 plan=plan,
                 solution=None,
-                validation=None,
+                validation=validation,
                 visualization=visualization,
             )
             _log("conversationalist", {"response": response_text})
@@ -985,13 +1043,13 @@ class OrchestratorAgent:
                 "updated_student_model": student_model,  # unchanged: modeler did not run
                 "plan": plan,
                 "solution": None,
-                "validation": None,
+                "validation": validation,
                 "visualization": visualization,
                 "diagram_image": diagram_image,
                 "parsed_input": parsed_input,
                 "route": route,
                 "route_decision": route_decision,
-                "low_confidence": False,
+                "low_confidence": low_confidence,
             }
 
         # ---------- CREATE: Modeler -> Planner -> Identifier (Student Modeler
