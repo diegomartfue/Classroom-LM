@@ -72,15 +72,37 @@ function loadActiveId(conversations: Conversation[]): string {
   return conversations[0]?.id ?? 'seed-1';
 }
 
+
+type StoredDoc = {
+  doc_id: string;
+  filename: string;
+  words: number;
+  extraction_method: string;
+};
+
 // ==================== Component ====================
 export default function ClassroomLM() {
   const [conversations, setConversations] = useState<Conversation[]>(loadConversations);
   const [activeId, setActiveId] = useState<string>(() => loadActiveId(loadConversations()));
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [attachedContext, setAttachedContext] = useState<string>('');
+  const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
+  const [documents, setDocuments] = useState<StoredDoc[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [studentModel, setStudentModel] = useState<object>({});
+  const [uploadError, setUploadError] = useState('');
+  async function refreshDocuments() {
+    try {
+      const res = await fetch(`${API_BASE}/documents`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setDocuments(data.documents ?? []);
+    } catch {
+      // list stays as-is; the sidebar just shows what it last had
+    }
+  }
+
+  useEffect(() => { refreshDocuments(); }, []);
 
   const active = conversations.find(c => c.id === activeId);
   const messages = active?.messages ?? [];
@@ -177,11 +199,10 @@ async function sendMessage(overrideText?: string) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: attachedContext
-            ? `[DOCUMENT CONTEXT]:\n${attachedContext}\n\n[STUDENT QUESTION]: ${text}`
-            : text,
+          message: text,
           conversation_history: conversationHistory,
           student_model: studentModel,
+          doc_ids: selectedDocIds,
         }),
       });
 
@@ -245,60 +266,99 @@ async function sendMessage(overrideText?: string) {
     if (!file) return;
 
     setIsUploading(true);
-
-    // Add a system message showing upload is in progress
-    const uploadingMsg: Message = {
-      id: `m-${Date.now()}-upload`,
-      role: 'ai',
-      content: `📎 Reading ${file.name}...`,
-      source: null,
-    };
-    updateActive(c => ({ ...c, messages: [...c.messages, uploadingMsg] }));
-
     try {
       const formData = new FormData();
       formData.append('file', file);
 
-      const res = await fetch(`${API_BASE}/interpret`, {
+      const res = await fetch(`${API_BASE}/documents`, {
         method: 'POST',
         body: formData,
       });
-
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
 
-      if (data.status === 'success') {
-        // Store extracted text as context
-        setAttachedContext(data.extracted_text);
-
-        // Replace uploading message with success message
-        const successMsg: Message = {
-          id: `m-${Date.now()}-success`,
-          role: 'ai',
-          content: `📎 **${file.name}** uploaded successfully. I can now see the content. Ask me anything about it!`,
-          source: null,
-        };
-        updateActive(c => ({
-          ...c,
-          messages: [...c.messages.filter(m => m.id !== uploadingMsg.id), successMsg]
-        }));
-      } else {
-        throw new Error(data.message);
+      if (!res.ok) {
+        // The backend sends a human-readable reason in `detail`.
+        setUploadError(data.detail ?? `Upload failed (HTTP ${res.status})`);
+        return;
       }
+
+      setUploadError('');
+      await refreshDocuments();
+      // Newly uploaded documents start attached — that is almost always what
+      // the person wants right after uploading one.
+      setSelectedDocIds(prev => [...prev, data.doc_id]);
     } catch (err) {
-      const errMsg: Message = {
-        id: `m-${Date.now()}-err`,
-        role: 'ai',
-        content: `Failed to read file: ${(err as Error).message}`,
-        source: null,
-      };
-      updateActive(c => ({
-        ...c,
-        messages: [...c.messages.filter(m => m.id !== uploadingMsg.id), errMsg]
-      }));
+      setUploadError(`Upload failed: ${(err as Error).message}`);
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }
+
+  function toggleDoc(docId: string) {
+    setSelectedDocIds(prev =>
+      prev.includes(docId) ? prev.filter(id => id !== docId) : [...prev, docId]
+    );
+  }
+
+  async function deleteDoc(docId: string) {
+    try {
+      await fetch(`${API_BASE}/documents/${docId}`, { method: 'DELETE' });
+      setSelectedDocIds(prev => prev.filter(id => id !== docId));
+      await refreshDocuments();
+    } catch {
+      setUploadError('Could not delete that document.');
+    }
+  }
+
+  // Summarize / quiz results are injected into the chat as AI messages so they
+  // reuse the existing message rendering rather than needing their own surface.
+  async function runDocAction(docId: string, action: 'summarize' | 'quiz') {
+    const doc = documents.find(d => d.doc_id === docId);
+    const label = doc?.filename ?? 'document';
+    const pendingId = `m-${Date.now()}-doc`;
+
+    updateActive(c => ({
+      ...c,
+      messages: [...c.messages, {
+        id: pendingId,
+        role: 'ai',
+        content: action === 'quiz'
+          ? `Writing a quiz from ${label}…`
+          : `Summarizing ${label}…`,
+        source: null,
+      }],
+    }));
+
+    try {
+      const body = action === 'quiz'
+        ? { doc_ids: [docId], num_questions: 5 }
+        : { doc_ids: [docId] };
+
+      const res = await fetch(`${API_BASE}/documents/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail ?? `HTTP ${res.status}`);
+
+      const content = action === 'quiz' ? formatQuiz(data) : data.summary;
+      updateActive(c => ({
+        ...c,
+        messages: c.messages.map(m =>
+          m.id === pendingId ? { ...m, content } : m
+        ),
+      }));
+    } catch (err) {
+      updateActive(c => ({
+        ...c,
+        messages: c.messages.map(m =>
+          m.id === pendingId
+            ? { ...m, content: `Could not ${action} ${label}: ${(err as Error).message}` }
+            : m
+        ),
+      }));
     }
   }
 
@@ -347,21 +407,72 @@ async function sendMessage(overrideText?: string) {
           ))}
         </div>
 
+<div className="clm-sources-section">
+          <div className="clm-section-label">
+            Sources
+            {selectedDocIds.length > 0 && (
+              <span className="clm-attached-count">
+                {selectedDocIds.length} attached
+              </span>
+            )}
+          </div>
+
+          {documents.length === 0 && !isUploading && (
+            <div className="clm-sources-empty">
+              No documents yet. Upload lecture notes, a homework page, or a photo
+              of your work.
+            </div>
+          )}
+
+          {documents.map(d => (
+            <div key={d.doc_id} className="clm-source-item">
+              <label className="clm-source-label">
+                <input
+                  type="checkbox"
+                  checked={selectedDocIds.includes(d.doc_id)}
+                  onChange={() => toggleDoc(d.doc_id)}
+                />
+                <span className="clm-source-name" title={d.filename}>
+                  {d.filename}
+                </span>
+              </label>
+              <div className="clm-source-meta">
+                {d.words} words
+                {d.extraction_method === 'vision' && ' · transcribed'}
+              </div>
+              <div className="clm-source-actions">
+                <button onClick={() => runDocAction(d.doc_id, 'summarize')}>
+                  Summarize
+                </button>
+                <button onClick={() => runDocAction(d.doc_id, 'quiz')}>
+                  Quiz
+                </button>
+                <button onClick={() => deleteDoc(d.doc_id)}>Delete</button>
+              </div>
+            </div>
+          ))}
+        </div>
+
         <div className="clm-sidebar-footer">
           <button
             className="clm-footer-btn"
             onClick={() => fileInputRef.current?.click()}
+            disabled={isUploading}
           >
             <UploadIcon />
-            Upload Materials
+            {isUploading ? 'Reading document…' : 'Upload Materials'}
           </button>
           <input
             type="file"
             ref={fileInputRef}
             onChange={handleUpload}
             style={{ display: 'none' }}
-            accept=".pdf,.png,.jpg,.jpeg,.gif,.webp"
+            accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.gif,.webp"
           />
+
+          {uploadError && (
+            <div className="clm-upload-error">{uploadError}</div>
+          )}
 
           <div className="clm-user-card">
             <div className="clm-avatar">E</div>
@@ -418,15 +529,12 @@ async function sendMessage(overrideText?: string) {
               disabled={isLoading}
             />
             <div className="clm-composer-actions">
-              <button
-                className="clm-icon-btn"
-                onClick={() => fileInputRef.current?.click()}
-                title="Attach file"
-                disabled={isUploading}
-                style={{ opacity: isUploading ? 0.5 : 1 }}
-              >
-                {isUploading ? '⏳' : <AttachIcon />}
-              </button>
+              {selectedDocIds.length > 0 && (
+                <span className="clm-attach-indicator" title="Attached sources">
+                  <AttachIcon />
+                  {selectedDocIds.length}
+                </span>
+              )}
               <button
                 className="clm-send-btn"
                 onClick={() => sendMessage()}
@@ -611,4 +719,23 @@ function renderContent(text: string): string {
       return renderPlain(part);
     })
     .join('');
+}
+
+
+function formatQuiz(data: any): string {
+  const lines: string[] = [];
+  if (data.topic) lines.push(`**Quiz: ${data.topic}**`);
+  (data.questions ?? []).forEach((q: any, i: number) => {
+    lines.push('');
+    lines.push(`**${i + 1}. ${q.question}**`);
+    q.options.forEach((opt: string, j: number) => {
+      lines.push(`${String.fromCharCode(65 + j)}. ${opt}`);
+    });
+    lines.push(`*Answer: ${String.fromCharCode(65 + q.correct_index)} — ${q.explanation}*`);
+  });
+  if (data.rejected?.length) {
+    lines.push('');
+    lines.push(`*${data.rejected.length} question(s) were dropped in validation.*`);
+  }
+  return lines.join('\n');
 }
