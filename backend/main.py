@@ -322,3 +322,23 @@ def summarize_endpoint(request: SummarizeRequest):
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Summarization failed: {exc}")
+    
+    
+    
+class QuizRequest(BaseModel):
+    doc_ids: list[str]
+    num_questions: int = 5
+
+
+@app.post("/documents/quiz")
+def quiz_endpoint(request: QuizRequest):
+    """Generate a multiple-choice quiz from stored documents."""
+    import document_features
+    try:
+        return document_features.make_quiz(request.doc_ids, request.num_questions)
+    except DocumentError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except document_features.QuizError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Quiz generation failed: {exc}")
