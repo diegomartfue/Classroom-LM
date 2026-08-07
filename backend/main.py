@@ -304,3 +304,21 @@ def delete_document_endpoint(doc_id: str):
         return document_store.delete_document(doc_id)
     except DocumentError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    
+    
+    
+class SummarizeRequest(BaseModel):
+    doc_ids: list[str]
+    instruction: str = ""
+
+
+@app.post("/documents/summarize")
+def summarize_endpoint(request: SummarizeRequest):
+    """Summarize one or more stored documents."""
+    import document_features
+    try:
+        return document_features.summarize(request.doc_ids, request.instruction)
+    except DocumentError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Summarization failed: {exc}")
