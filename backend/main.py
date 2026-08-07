@@ -6,10 +6,12 @@ import shutil
 import os
 import base64
 import json
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from rag_pipeline import ingest_document, query_rag
+import document_store
+from document_store import DocumentError
 from pydantic import BaseModel
 from claude_client import chat
 from sympy_solver import extract_and_solve
@@ -254,3 +256,51 @@ def tutor_stream_endpoint(request: TutorRequest):
             yield f"data: {json.dumps({'type': 'error', 'text': str(e)})}\n\n"
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
+# =============================================================================
+# DOCUMENT STORE
+# =============================================================================
+
+@app.post("/documents")
+async def create_document(file: UploadFile = File(...),
+                          course: str = Form("default")):
+    """Upload one course document. Extracts and stores its text."""
+    try:
+        data = await file.read()
+    except Exception as exc:
+        raise HTTPException(status_code=400,
+                            detail=f"Could not read the upload: {exc}")
+    try:
+        return document_store.save_document(file.filename or "", data, course)
+    except DocumentError as exc:
+        # Rejections carry a user-facing message; 422 = we understood the
+        # request but the file itself is unusable.
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500,
+                            detail=f"Unexpected error storing the document: {exc}")
+
+
+@app.get("/documents")
+def list_documents_endpoint(course: str | None = None):
+    """List stored documents, newest first. Text is not included."""
+    return {"documents": document_store.list_documents(course)}
+
+
+@app.get("/documents/{doc_id}")
+def get_document_endpoint(doc_id: str):
+    """One document record plus its full extracted text."""
+    try:
+        return document_store.get_document(doc_id)
+    except DocumentError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.delete("/documents/{doc_id}")
+def delete_document_endpoint(doc_id: str):
+    """Remove a document and its stored text."""
+    try:
+        return document_store.delete_document(doc_id)
+    except DocumentError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
