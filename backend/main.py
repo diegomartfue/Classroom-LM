@@ -52,6 +52,7 @@ class TutorRequest(BaseModel):
     message: str
     conversation_history: list = []
     student_model: dict = {}
+    doc_ids: list[str] = []
 
 class TutorResponse(BaseModel):
     response: str
@@ -244,13 +245,27 @@ def tutor_endpoint(request: TutorRequest):
         },
     )
     
+
+
 @app.post("/tutor/stream")
 def tutor_stream_endpoint(request: TutorRequest):
     agent = OrchestratorAgent()
 
+    # Text from any documents the student attached. Empty when none, in which
+    # case the pipeline behaves exactly as it did before.
+    source_text = ""
+    if request.doc_ids:
+        try:
+            source_text = document_store.get_context(request.doc_ids)
+        except DocumentError:
+            # A missing document must not kill the whole turn — the tutor
+            # answers without it.
+            source_text = ""
+
     def event_gen():
         try:
-            for event in agent.run_stream(request.message, request.conversation_history, request.student_model):
+            for event in agent.run_stream(request.message, request.conversation_history,
+                                          request.student_model, source_text):
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'text': str(e)})}\n\n"
