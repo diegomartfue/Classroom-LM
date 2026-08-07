@@ -6,10 +6,12 @@ import shutil
 import os
 import base64
 import json
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from rag_pipeline import ingest_document, query_rag
+import document_store
+from document_store import DocumentError
 from pydantic import BaseModel
 from claude_client import chat
 from sympy_solver import extract_and_solve
@@ -50,6 +52,7 @@ class TutorRequest(BaseModel):
     message: str
     conversation_history: list = []
     student_model: dict = {}
+    doc_ids: list[str] = []
 
 class TutorResponse(BaseModel):
     response: str
@@ -242,15 +245,115 @@ def tutor_endpoint(request: TutorRequest):
         },
     )
     
+
+
 @app.post("/tutor/stream")
 def tutor_stream_endpoint(request: TutorRequest):
     agent = OrchestratorAgent()
 
+    # Text from any documents the student attached. Empty when none, in which
+    # case the pipeline behaves exactly as it did before.
+    source_text = ""
+    if request.doc_ids:
+        try:
+            source_text = document_store.get_context(request.doc_ids)
+        except DocumentError:
+            # A missing document must not kill the whole turn — the tutor
+            # answers without it.
+            source_text = ""
+
     def event_gen():
         try:
-            for event in agent.run_stream(request.message, request.conversation_history, request.student_model):
+            for event in agent.run_stream(request.message, request.conversation_history,
+                                          request.student_model, source_text):
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'text': str(e)})}\n\n"
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
+# =============================================================================
+# DOCUMENT STORE
+# =============================================================================
+
+@app.post("/documents")
+async def create_document(file: UploadFile = File(...),
+                          course: str = Form("default")):
+    """Upload one course document. Extracts and stores its text."""
+    try:
+        data = await file.read()
+    except Exception as exc:
+        raise HTTPException(status_code=400,
+                            detail=f"Could not read the upload: {exc}")
+    try:
+        return document_store.save_document(file.filename or "", data, course)
+    except DocumentError as exc:
+        # Rejections carry a user-facing message; 422 = we understood the
+        # request but the file itself is unusable.
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500,
+                            detail=f"Unexpected error storing the document: {exc}")
+
+
+@app.get("/documents")
+def list_documents_endpoint(course: str | None = None):
+    """List stored documents, newest first. Text is not included."""
+    return {"documents": document_store.list_documents(course)}
+
+
+@app.get("/documents/{doc_id}")
+def get_document_endpoint(doc_id: str):
+    """One document record plus its full extracted text."""
+    try:
+        return document_store.get_document(doc_id)
+    except DocumentError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.delete("/documents/{doc_id}")
+def delete_document_endpoint(doc_id: str):
+    """Remove a document and its stored text."""
+    try:
+        return document_store.delete_document(doc_id)
+    except DocumentError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    
+    
+    
+class SummarizeRequest(BaseModel):
+    doc_ids: list[str]
+    instruction: str = ""
+
+
+@app.post("/documents/summarize")
+def summarize_endpoint(request: SummarizeRequest):
+    """Summarize one or more stored documents."""
+    import document_features
+    try:
+        return document_features.summarize(request.doc_ids, request.instruction)
+    except DocumentError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Summarization failed: {exc}")
+    
+    
+    
+class QuizRequest(BaseModel):
+    doc_ids: list[str]
+    num_questions: int = 5
+
+
+@app.post("/documents/quiz")
+def quiz_endpoint(request: QuizRequest):
+    """Generate a multiple-choice quiz from stored documents."""
+    import document_features
+    try:
+        return document_features.make_quiz(request.doc_ids, request.num_questions)
+    except DocumentError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except document_features.QuizError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Quiz generation failed: {exc}")

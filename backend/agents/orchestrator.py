@@ -528,6 +528,12 @@ Behavior by route:
 - SMALLTALK: Respond briefly and warmly. If asked what you can do, say you help with 2D dynamics: free-body diagrams, kinematics (position, velocity, acceleration), and kinetics (Newton's second law, work-energy, impulse-momentum). Mention you can also generate practice problems on request.
 - OUT_OF_SCOPE: Gently explain this is outside 2D dynamics (e.g. it's 3D, involves deformation/stress, or fluids/thermo), and offer a dynamics version instead. Do not attempt it.
 
+IF COURSE DOCUMENTS ARE ATTACHED: the student has attached material to this
+message. Answer from it when it's relevant, even on a CONCEPT or SMALLTALK
+route. If they ask a vague question like "what is this about", they most
+likely mean the attached document — answer about the document, not about
+yourself.
+
 IMPORTANT: The system CAN render diagrams. Never tell the student you can't draw. If they ask for a diagram, tell them to ask directly (e.g. "draw the free-body diagram") and it will be sketched.
 TONE: Warm but not saccharine. A knowledgeable TA, not a cheerleader. Plain prose. Brief.
 
@@ -1262,7 +1268,8 @@ class OrchestratorAgent:
         # All attempts failed validation → best attempt, flagged low-confidence.
         return solution, validation, True
 
-    def run_stream(self, message: str, conversation_history: list, student_model: dict):
+    def run_stream(self, message: str, conversation_history: list, student_model: dict,
+                   source_text: str = ""):
         """Streaming variant of run(). Generator yielding event dicts:
             {"type":"status","text":...}  progress during the silent pipeline phase
             {"type":"meta", ...}          one-shot: student_model, route, decision, diagram_image
@@ -1271,8 +1278,24 @@ class OrchestratorAgent:
         Only the FINAL agent is streamed; upstream agents return JSON we need whole,
         so we emit status lines while they run. NOTE: mirrors run()'s control flow —
         keep the two in sync until we refactor the shared part out (tech debt)."""
+        # Text from documents the student attached to this turn. When empty,
+        # source_block is "" and every path below is unchanged.
+        source_block = ""
+        if source_text and source_text.strip():
+            source_block = (
+                "\n\n[COURSE DOCUMENTS ATTACHED BY THE STUDENT]\n"
+                "Treat this material as the authoritative source for this turn. "
+                "Prefer its notation, methods, and worked examples over your own. "
+                "If it conflicts with what you would otherwise say, follow the "
+                "documents and say so. Content grounded in these documents is not "
+                "invented content — you may use it freely.\n"
+                f"{source_text}\n"
+                "[END COURSE DOCUMENTS]"
+            )
+
         route_decision = self.router(message, conversation_history)
         route = route_decision.get("route", "PROBLEM")
+        
         
         if route == "DRAW":
             wants_multi = any(w in message.lower() for w in ("these", "them", "those", "all", "each"))
@@ -1291,7 +1314,7 @@ class OrchestratorAgent:
             # Single-diagram DRAW mirrors run(): Input Parser -> Visualizer
             # -> Schematic Layout -> Validator[retry] -> Conversationalist.
             yield {"type": "status", "text": "Sketching the setup…"}
-            parsed_input = self.input_parser(message, conversation_history)
+            parsed_input = self.input_parser(message + source_block, conversation_history)
             visualization = self.visualizer(parsed_input, None)
             layout = self.schematic_layout(parsed_input, None)
 
@@ -1347,6 +1370,7 @@ class OrchestratorAgent:
                 "student_message": message, "parsed_input": parsed_input,
                 "student_model": student_model, "plan": {"decision": "DRAW"},
                 "solution": None, "validation": validation, "visualization": visualization,
+                "source_documents": source_block,
             }
             user_content = f"Context bundle:\n{json.dumps(context_bundle, indent=2)}"
             with self.client.messages.stream(
@@ -1421,6 +1445,7 @@ class OrchestratorAgent:
                 "student_message": message, "parsed_input": create_context,
                 "student_model": updated_student_model, "plan": plan,
                 "solution": created, "validation": validation, "visualization": visualization,
+                "source_documents": source_block,
             }
             user_content = f"Context bundle:\n{json.dumps(context_bundle, indent=2)}"
             with self.client.messages.stream(
@@ -1436,7 +1461,7 @@ class OrchestratorAgent:
         if route in ("CONCEPT", "SMALLTALK", "OUT_OF_SCOPE"):
             yield {"type": "meta", "student_model": student_model, "route": route,
                 "decision": route, "diagram_image": ""}
-            user_content = f"Route: {route}\n\nStudent's message:\n{message}"
+            user_content = f"Route: {route}\n\nStudent's message:\n{message}{source_block}"
             with self.client.messages.stream(
                 model="claude-sonnet-4-6", max_tokens=1024, temperature=0.5,
                 system=DIRECT_TUTOR_PROMPT,
@@ -1449,9 +1474,11 @@ class OrchestratorAgent:
 
         # PROBLEM path
         yield {"type": "status", "text": "Reading the problem\u2026"}
-        parsed_input = self.input_parser(message, conversation_history)
+        parsed_input = self.input_parser(message + source_block, conversation_history)
         updated_student_model = self.student_modeler(parsed_input, student_model, conversation_history)
-        plan = self.pedagogical_planner(parsed_input, updated_student_model, conversation_history, raw_message=message)
+        plan = self.pedagogical_planner(parsed_input, updated_student_model,
+                                        conversation_history,
+                                        raw_message=message + source_block)
 
         solution = validation = visualization = None
         diagram_image = ""
@@ -1475,6 +1502,7 @@ class OrchestratorAgent:
             "student_message": message, "parsed_input": parsed_input,
             "student_model": updated_student_model, "plan": plan,
             "solution": solution, "validation": validation, "visualization": visualization,
+            "source_documents": source_block,
         }
         user_content = f"Context bundle:\n{json.dumps(context_bundle, indent=2)}"
         with self.client.messages.stream(
