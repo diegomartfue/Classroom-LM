@@ -72,6 +72,47 @@ function loadActiveId(conversations: Conversation[]): string {
   return conversations[0]?.id ?? 'seed-1';
 }
 
+// --- Per-conversation history persistence ---------------------------------
+// The conversation_history sent to /tutor/stream is persisted per conversation
+// under "conversation_history_{conversationId}" so switching between (or
+// reloading) conversations restores each one's own accumulated history.
+type HistoryTurn = { role: 'user' | 'assistant'; content: string };
+
+const HISTORY_KEY_PREFIX = 'conversation_history_';
+
+function historyKey(conversationId: string): string {
+  return `${HISTORY_KEY_PREFIX}${conversationId}`;
+}
+
+function loadHistory(conversationId: string): HistoryTurn[] | null {
+  try {
+    const raw = sessionStorage.getItem(historyKey(conversationId));
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed as HistoryTurn[];
+    }
+  } catch {
+    // corrupt or unavailable storage — treat as no stored history
+  }
+  return null;
+}
+
+function saveHistory(conversationId: string, history: HistoryTurn[]): void {
+  try {
+    sessionStorage.setItem(historyKey(conversationId), JSON.stringify(history));
+  } catch {
+    // storage full/unavailable — keep going with the in-memory ref
+  }
+}
+
+function clearHistory(conversationId: string): void {
+  try {
+    sessionStorage.removeItem(historyKey(conversationId));
+  } catch {
+    // ignore — non-removed key is harmless
+  }
+}
+
 
 type StoredDoc = {
   doc_id: string;
@@ -112,9 +153,9 @@ export default function ClassroomLM() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Conversation history sent to /tutor/stream lives in a ref so it persists
-  // across re-renders without causing them. It is rebuilt on conversation
-  // switch (empty for a fresh conversation) and appended after each response.
-  const conversationHistoryRef = useRef<{ role: 'user' | 'assistant'; content: string }[]>([]);
+  // across re-renders without causing them. It is backed by sessionStorage
+  // (per conversation) and appended after each response.
+  const conversationHistoryRef = useRef<HistoryTurn[]>([]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -139,16 +180,22 @@ export default function ClassroomLM() {
     }
   }, [activeId]);
 
-  // On conversation switch, start the history ref fresh from the selected
-  // conversation's own messages — that is [] for a brand-new conversation, and
-  // the restored turns when switching back to an existing one. Depends on
-  // activeId ONLY: within a conversation the ref is advanced by sendMessage's
-  // append, not rebuilt on every message change.
+  // On conversation switch (and on mount, for the initially-active
+  // conversation), load the history ref from sessionStorage under
+  // "conversation_history_{activeId}" if present; otherwise rebuild it from the
+  // conversation's own messages. Depends on activeId ONLY: within a
+  // conversation the ref is advanced by sendMessage's append, not rebuilt on
+  // every message change.
   useEffect(() => {
-    const msgs = conversations.find(c => c.id === activeId)?.messages ?? [];
-    conversationHistoryRef.current = msgs
-      .filter(m => m.content.trim() !== '')
-      .map(m => ({ role: m.role === 'ai' ? 'assistant' : 'user', content: m.content }));
+    const stored = loadHistory(activeId);
+    if (stored) {
+      conversationHistoryRef.current = stored;
+    } else {
+      const msgs = conversations.find(c => c.id === activeId)?.messages ?? [];
+      conversationHistoryRef.current = msgs
+        .filter(m => m.content.trim() !== '')
+        .map(m => ({ role: m.role === 'ai' ? 'assistant' : 'user', content: m.content }));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
 
@@ -169,6 +216,9 @@ export default function ClassroomLM() {
     };
     setConversations(prev => [fresh, ...prev]);
     setActiveId(id);
+    // Fresh conversation: empty the ref and drop any stale persisted history.
+    conversationHistoryRef.current = [];
+    clearHistory(id);
     setTimeout(() => textareaRef.current?.focus(), 0);
   }
 
@@ -264,12 +314,14 @@ async function sendMessage(overrideText?: string) {
       if (!streamed) patchAi({ content: '(no response)' });
 
       // Append this completed turn (user + assistant) to the history ref so the
-      // next /tutor/stream request carries the full accumulated history.
+      // next /tutor/stream request carries the full accumulated history, and
+      // persist it under "conversation_history_{activeId}".
       conversationHistoryRef.current = [
         ...conversationHistoryRef.current,
         { role: 'user', content: text },
         { role: 'assistant', content: streamed || '(no response)' },
       ];
+      saveHistory(activeId, conversationHistoryRef.current);
     } catch (err) {
       patchAi({
         content: `Error reaching backend: ${(err as Error).message}. Is \`uvicorn main:app\` running?`,
