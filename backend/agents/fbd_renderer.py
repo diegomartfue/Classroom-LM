@@ -41,8 +41,17 @@ def _force_angle_deg(force: dict, incline_angle_deg: float) -> float:
 
 
 def render_fbd(spec: dict) -> str:
-    """Return a base64 PNG string, or '' if the spec is not renderable."""
-    if not spec or not spec.get("renderable"):
+    """Return a base64 PNG string, or '' if the spec is not renderable.
+
+    Dynamics mechanisms (``type`` of gear/linkage/mechanism) are handed to the
+    dynamics renderer; everything else falls back to the single-body statics FBD
+    path below (block on incline/flat, free particle).
+    """
+    if not spec:
+        return ""
+    if str(spec.get("type") or "").lower() in _DYNAMICS_TYPES:
+        return render_dynamics_diagram(spec)
+    if not spec.get("renderable"):
         return ""
     archetype = spec.get("archetype")
     if archetype not in _SUPPORTED:
@@ -112,6 +121,216 @@ def render_fbd(spec: dict) -> str:
     plt.close(fig)
     buf.seek(0)
     return base64.b64encode(buf.read()).decode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Dynamics mechanisms: gear trains and linkages (rotating rigid-body motion).
+# A separate deterministic code path from the single-body FBD renderer above.
+# ---------------------------------------------------------------------------
+_DYNAMICS_TYPES = ("gear", "linkage", "mechanism")
+
+
+def _fig_to_b64(fig) -> str:
+    """Serialize a matplotlib figure to a base64 PNG string and close it."""
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", dpi=120, facecolor="white")
+    plt.close(fig)
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode("utf-8")
+
+
+def _arc_points(cx, cy, r, start_deg, end_deg, n=24):
+    """Points along a circular arc (for angular-velocity arcs)."""
+    a0, a1 = math.radians(start_deg), math.radians(end_deg)
+    return [(cx + r * math.cos(a0 + (a1 - a0) * i / n),
+             cy + r * math.sin(a0 + (a1 - a0) * i / n)) for i in range(n + 1)]
+
+
+def render_dynamics_diagram(fbd_data: dict) -> str:
+    """Render a dynamics mechanism (gear train or linkage) to a base64 PNG.
+
+    Dispatches on ``fbd_data['type']``:
+      - "gear"                   -> gear-system renderer
+      - "linkage" / "mechanism"  -> linkage renderer
+    Returns '' for anything else or on any failure, so callers can fall back to
+    the single-body FBD / schematic renderers for statics problems.
+    """
+    if not fbd_data:
+        return ""
+    dtype = str(fbd_data.get("type") or "").lower()
+    try:
+        if dtype == "gear":
+            return _render_gear_system(fbd_data)
+        if dtype in ("linkage", "mechanism"):
+            return _render_linkage_system(fbd_data)
+    except Exception:
+        return ""
+    return ""
+
+
+def _render_gear_system(data: dict) -> str:
+    """Gears as circle outlines, arms/sticks as lines, pivots as dots,
+    velocity / angular-velocity vectors as arrows, labels for all quantities."""
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.set_aspect("equal")
+    ax.axis("off")
+    xs, ys = [], []
+
+    def _track(*pts):
+        for x, y in pts:
+            xs.append(x); ys.append(y)
+
+    # arms / sticks connecting gear centers
+    for a in (data.get("arms") or data.get("sticks") or []):
+        try:
+            x1, y1, x2, y2 = float(a["x1"]), float(a["y1"]), float(a["x2"]), float(a["y2"])
+            ax.plot([x1, x2], [y1, y2], color=NAVY, lw=2.5, solid_capstyle="round", zorder=2)
+            _track((x1, y1), (x2, y2))
+            if a.get("label"):
+                ax.text((x1 + x2) / 2 + 0.08, (y1 + y2) / 2 + 0.08, a["label"],
+                        color=NAVY, fontsize=9, zorder=6)
+        except Exception:
+            continue
+
+    # gears as circle outlines with omega label placed outside the circle
+    for g in (data.get("gears") or []):
+        try:
+            cx, cy, r = float(g["cx"]), float(g["cy"]), float(g.get("r", 0.5))
+            ax.add_patch(plt.Circle((cx, cy), r, fill=False, edgecolor=BLACK, lw=2, zorder=3))
+            _track((cx - r, cy - r), (cx + r, cy + r))
+            if g.get("label"):
+                ax.text(cx, cy, g["label"], color=BLACK, fontsize=10,
+                        ha="center", va="center", zorder=4)
+            omega = g.get("omega")
+            if omega:
+                ax.text(cx + r + 0.15, cy + r + 0.15, str(omega), color=ORANGE,
+                        fontsize=9, ha="left", va="bottom", zorder=6)
+        except Exception:
+            continue
+
+    # pivot points as filled dots, label offset diagonally
+    for pv in (data.get("pivots") or []):
+        try:
+            x, y = float(pv["x"]), float(pv["y"])
+            ax.plot(x, y, "o", color=BLACK, markersize=7, zorder=5)
+            _track((x, y))
+            if pv.get("label"):
+                ax.text(x + 0.08, y + 0.08, pv["label"], color=BLACK, fontsize=9, zorder=6)
+        except Exception:
+            continue
+
+    # velocity / angular-velocity vectors as arrows
+    for v in (data.get("velocities") or data.get("vectors") or []):
+        try:
+            x1, y1 = float(v["x"]), float(v["y"])
+            dx, dy = float(v.get("dx", 0)), float(v.get("dy", 0))
+            ax.annotate("", xy=(x1 + dx, y1 + dy), xytext=(x1, y1),
+                        arrowprops=dict(arrowstyle="-|>", color=ORANGE, lw=2), zorder=5)
+            _track((x1, y1), (x1 + dx, y1 + dy))
+            if v.get("label"):
+                ax.text(x1 + dx + 0.08, y1 + dy + 0.08, v["label"],
+                        color=ORANGE, fontsize=9, zorder=6)
+        except Exception:
+            continue
+
+    # contact points between meshing gears
+    for c in (data.get("contacts") or data.get("contact_points") or []):
+        try:
+            x, y = float(c["x"]), float(c["y"])
+            ax.plot(x, y, "x", color=ORANGE, markersize=8, mew=2, zorder=5)
+            _track((x, y))
+            if c.get("label"):
+                ax.text(x + 0.08, y - 0.08, c["label"], color=ORANGE,
+                        fontsize=9, ha="left", va="top", zorder=6)
+        except Exception:
+            continue
+
+    if xs and ys:
+        pad = 0.6
+        ax.set_xlim(min(xs) - pad, max(xs) + pad)
+        ax.set_ylim(min(ys) - pad, max(ys) + pad)
+    if data.get("title"):
+        ax.set_title(data["title"], fontsize=10, color=NAVY, pad=8)
+
+    return _fig_to_b64(fig)
+
+
+def _render_linkage_system(data: dict) -> str:
+    """Rods as lines, pivots as filled circles, sliding joints as rectangles,
+    angular-velocity arcs, labels for all quantities."""
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.set_aspect("equal")
+    ax.axis("off")
+    xs, ys = [], []
+
+    def _track(*pts):
+        for x, y in pts:
+            xs.append(x); ys.append(y)
+
+    # rods / links as lines
+    for rod in (data.get("rods") or data.get("links") or []):
+        try:
+            x1, y1, x2, y2 = float(rod["x1"]), float(rod["y1"]), float(rod["x2"]), float(rod["y2"])
+            ax.plot([x1, x2], [y1, y2], color=NAVY, lw=3, solid_capstyle="round", zorder=2)
+            _track((x1, y1), (x2, y2))
+            if rod.get("label"):
+                ax.text((x1 + x2) / 2 + 0.08, (y1 + y2) / 2 + 0.08, rod["label"],
+                        color=NAVY, fontsize=9, zorder=6)
+        except Exception:
+            continue
+
+    # sliding joints as rectangles
+    for s in (data.get("sliders") or data.get("sliding_joints") or []):
+        try:
+            cx, cy = float(s["cx"]), float(s["cy"])
+            w, h = float(s.get("w", 0.5)), float(s.get("h", 0.3))
+            angle = float(s.get("angle", 0.0))
+            ax.add_patch(plt.Rectangle((cx - w / 2, cy - h / 2), w, h, angle=angle,
+                                       facecolor="none", edgecolor=BLACK, lw=2, zorder=3))
+            _track((cx - w, cy - h), (cx + w, cy + h))
+            if s.get("label"):
+                ax.text(cx + 0.08, cy + h / 2 + 0.08, s["label"],
+                        color=BLACK, fontsize=9, zorder=6)
+        except Exception:
+            continue
+
+    # pivot points as filled circles, label offset diagonally
+    for pv in (data.get("pivots") or []):
+        try:
+            x, y = float(pv["x"]), float(pv["y"])
+            ax.add_patch(plt.Circle((x, y), 0.06, facecolor=BLACK, edgecolor=BLACK, zorder=5))
+            _track((x, y))
+            if pv.get("label"):
+                ax.text(x + 0.08, y + 0.08, pv["label"], color=BLACK, fontsize=9, zorder=6)
+        except Exception:
+            continue
+
+    # angular-velocity arcs with an arrowhead at the arc end
+    for w in (data.get("angular_velocities") or data.get("arcs") or []):
+        try:
+            cx, cy = float(w["cx"]), float(w["cy"])
+            r = float(w.get("r", 0.5))
+            start = float(w.get("start", w.get("start_deg", 0.0)))
+            end = float(w.get("end", w.get("end_deg", 120.0)))
+            pts = _arc_points(cx, cy, r, start, end)
+            ax.plot([p[0] for p in pts], [p[1] for p in pts], color=ORANGE, lw=2, zorder=4)
+            ax.annotate("", xy=pts[-1], xytext=pts[-2],
+                        arrowprops=dict(arrowstyle="-|>", color=ORANGE, lw=2), zorder=5)
+            _track((cx - r, cy - r), (cx + r, cy + r))
+            if w.get("label"):
+                lx, ly = pts[len(pts) // 2]
+                ax.text(lx + 0.1, ly + 0.1, w["label"], color=ORANGE, fontsize=9, zorder=6)
+        except Exception:
+            continue
+
+    if xs and ys:
+        pad = 0.6
+        ax.set_xlim(min(xs) - pad, max(xs) + pad)
+        ax.set_ylim(min(ys) - pad, max(ys) + pad)
+    if data.get("title"):
+        ax.set_title(data["title"], fontsize=10, color=NAVY, pad=8)
+
+    return _fig_to_b64(fig)
 
 
 _SCHEMATIC_COLORS = {
