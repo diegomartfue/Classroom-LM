@@ -56,7 +56,6 @@ def summarize(doc_ids: list, instruction: str = "") -> dict:
     response = _client().messages.create(
         model=MODEL,
         max_tokens=2048,
-        temperature=0.3,
         system=SUMMARIZER_PROMPT,
         messages=[{"role": "user", "content": user_content}],
     )
@@ -229,7 +228,6 @@ def make_quiz(doc_ids: list, num_questions: int = 5) -> dict:
     response = _client().messages.create(
         model=MODEL,
         max_tokens=4096,
-        temperature=0.4,
         system=QUIZ_PROMPT,
         messages=[{"role": "user", "content": user_content}],
     )

@@ -624,7 +624,6 @@ class OrchestratorAgent:
         response = self.client.messages.create(
             model="claude-sonnet-5",
             max_tokens=1024,
-            temperature=0.5,
             system=DIRECT_TUTOR_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
@@ -661,7 +660,6 @@ class OrchestratorAgent:
         response = self.client.messages.create(
             model="claude-sonnet-5",
             max_tokens=1024,
-            temperature=0.2,
             system=STUDENT_MODELER_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
@@ -687,7 +685,6 @@ class OrchestratorAgent:
         response = self.client.messages.create(
             model="claude-sonnet-5",
             max_tokens=2048,
-            temperature=0,
             system=SOLVER_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
@@ -701,7 +698,6 @@ class OrchestratorAgent:
         response = self.client.messages.create(
             model="claude-sonnet-5",
             max_tokens=1024,
-            temperature=0,
             system=VALIDATOR_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
@@ -731,7 +727,6 @@ class OrchestratorAgent:
         response = self.client.messages.create(
             model="claude-sonnet-5",
             max_tokens=1500,
-            temperature=0.2,
             system=SCHEMATIC_LAYOUT_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
@@ -778,7 +773,6 @@ class OrchestratorAgent:
         response = self.client.messages.create(
             model="claude-sonnet-5",
             max_tokens=3000,
-            temperature=0,
             system=DIAGRAM_RENDERER_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
@@ -821,7 +815,6 @@ class OrchestratorAgent:
         response = self.client.messages.create(
             model="claude-sonnet-5",
             max_tokens=2048,
-            temperature=0.5,
             system=CONVERSATIONALIST_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
@@ -1375,7 +1368,7 @@ class OrchestratorAgent:
             }
             user_content = f"Context bundle:\n{json.dumps(context_bundle, indent=2)}"
             with self.client.messages.stream(
-                model="claude-sonnet-5", max_tokens=2048, temperature=0.5,
+                model="claude-sonnet-5", max_tokens=2048,
                 system=CONVERSATIONALIST_PROMPT,
                 messages=[{"role": "user", "content": user_content}],
             ) as stream:
@@ -1450,7 +1443,7 @@ class OrchestratorAgent:
             }
             user_content = f"Context bundle:\n{json.dumps(context_bundle, indent=2)}"
             with self.client.messages.stream(
-                model="claude-sonnet-5", max_tokens=2048, temperature=0.5,
+                model="claude-sonnet-5", max_tokens=2048,
                 system=CONVERSATIONALIST_PROMPT,
                 messages=[{"role": "user", "content": user_content}],
             ) as stream:
@@ -1464,7 +1457,7 @@ class OrchestratorAgent:
                 "decision": route, "diagram_image": ""}
             user_content = f"Route: {route}\n\nStudent's message:\n{message}{source_block}"
             with self.client.messages.stream(
-                model="claude-sonnet-5", max_tokens=1024, temperature=0.5,
+                model="claude-sonnet-5", max_tokens=1024,
                 system=DIRECT_TUTOR_PROMPT,
                 messages=[{"role": "user", "content": user_content}],
             ) as stream:
@@ -1507,7 +1500,7 @@ class OrchestratorAgent:
         }
         user_content = f"Context bundle:\n{json.dumps(context_bundle, indent=2)}"
         with self.client.messages.stream(
-            model="claude-sonnet-5", max_tokens=2048, temperature=0.5,
+            model="claude-sonnet-5", max_tokens=2048,
             system=CONVERSATIONALIST_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         ) as stream:
