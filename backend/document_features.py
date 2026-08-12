@@ -14,7 +14,7 @@ from document_store import get_context, DocumentError
 
 load_dotenv()
 
-MODEL = "claude-sonnet-5"
+MODEL = "claude-sonnet-4-6"
 
 
 def _client():

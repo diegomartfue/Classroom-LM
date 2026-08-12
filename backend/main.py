@@ -138,7 +138,7 @@ async def interpret_endpoint(file: UploadFile = File(...)):
             }
             b64 = base64.standard_b64encode(contents).decode("utf-8")
             response = client.messages.create(
-                model="claude-sonnet-5",
+                model="claude-sonnet-4-5",
                 max_tokens=1024,
                 messages=[{
                     "role": "user",
@@ -166,7 +166,7 @@ async def interpret_endpoint(file: UploadFile = File(...)):
             reader = PdfReader(io.BytesIO(contents))
             text = "\n".join(page.extract_text() or "" for page in reader.pages)
             response = client.messages.create(
-                model="claude-sonnet-5",
+                model="claude-sonnet-4-5",
                 max_tokens=1024,
                 messages=[{
                     "role": "user",
@@ -181,7 +181,7 @@ async def interpret_endpoint(file: UploadFile = File(...)):
             doc = Document(io.BytesIO(contents))
             text = "\n".join(para.text for para in doc.paragraphs)
             response = client.messages.create(
-                model="claude-sonnet-5",
+                model="claude-sonnet-4-5",
                 max_tokens=1024,
                 messages=[{
                     "role": "user",
