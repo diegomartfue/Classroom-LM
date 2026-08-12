@@ -186,7 +186,7 @@ def _extract_pdf_via_vision(data: bytes) -> str:
     b64 = base64.standard_b64encode(data).decode("utf-8")
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-6",
+            model="claude-sonnet-5",
             max_tokens=8000,
             messages=[{
                 "role": "user",
@@ -219,7 +219,7 @@ def _extract_image(data: bytes, ext: str) -> str:
     b64 = base64.standard_b64encode(data).decode("utf-8")
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-6",
+            model="claude-sonnet-5",
             max_tokens=4000,
             messages=[{
                 "role": "user",
