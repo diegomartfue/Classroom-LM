@@ -111,6 +111,11 @@ export default function ClassroomLM() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Conversation history sent to /tutor/stream lives in a ref so it persists
+  // across re-renders without causing them. It is rebuilt on conversation
+  // switch (empty for a fresh conversation) and appended after each response.
+  const conversationHistoryRef = useRef<{ role: 'user' | 'assistant'; content: string }[]>([]);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length]);
@@ -132,6 +137,19 @@ export default function ClassroomLM() {
     } catch {
       // ignore — non-persisted active id still works in-memory
     }
+  }, [activeId]);
+
+  // On conversation switch, start the history ref fresh from the selected
+  // conversation's own messages — that is [] for a brand-new conversation, and
+  // the restored turns when switching back to an existing one. Depends on
+  // activeId ONLY: within a conversation the ref is advanced by sendMessage's
+  // append, not rebuilt on every message change.
+  useEffect(() => {
+    const msgs = conversations.find(c => c.id === activeId)?.messages ?? [];
+    conversationHistoryRef.current = msgs
+      .filter(m => m.content.trim() !== '')
+      .map(m => ({ role: m.role === 'ai' ? 'assistant' : 'user', content: m.content }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
 
   // ==================== Handlers ====================
@@ -158,18 +176,11 @@ async function sendMessage(overrideText?: string) {
     const text = (overrideText ?? input).trim();
     if (!text || isLoading) return;
 
-    // Capture the full prior conversation BEFORE we append the new user
-    // message and the empty AI placeholder below. This is what gets sent as
-    // conversation_history so the backend sees every previous turn. Empty
-    // placeholders (e.g. an aborted stream) are filtered so they never leak in.
-    const conversationHistory = (
-      conversations.find(c => c.id === activeId)?.messages ?? []
-    )
-      .filter(m => m.content.trim() !== '')
-      .map(m => ({
-        role: m.role === 'ai' ? 'assistant' : 'user',
-        content: m.content,
-      }));
+    // Read the accumulated history for THIS conversation from the ref (it
+    // persists across re-renders without triggering them). This is the full
+    // prior history; the current turn is appended to the ref below, only after
+    // the response has streamed in.
+    const conversationHistory = conversationHistoryRef.current;
 
     const userMsg: Message = { id: `m-${Date.now()}`, role: 'user', content: text };
 
@@ -251,6 +262,14 @@ async function sendMessage(overrideText?: string) {
       }
 
       if (!streamed) patchAi({ content: '(no response)' });
+
+      // Append this completed turn (user + assistant) to the history ref so the
+      // next /tutor/stream request carries the full accumulated history.
+      conversationHistoryRef.current = [
+        ...conversationHistoryRef.current,
+        { role: 'user', content: text },
+        { role: 'assistant', content: streamed || '(no response)' },
+      ];
     } catch (err) {
       patchAi({
         content: `Error reaching backend: ${(err as Error).message}. Is \`uvicorn main:app\` running?`,
