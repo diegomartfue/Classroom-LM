@@ -21,6 +21,49 @@ ORANGE = "#FF8200"
 BLACK = "#0a0a0a"
 GRAY = "#9aa0a6"
 
+# ---------------------------------------------------------------------------
+# Shared diagram styling — keep every rendered figure clean and readable.
+# ---------------------------------------------------------------------------
+FIG_SIZE = (8, 6)
+TITLE_FS = 10          # figure title
+LABEL_FS = 7           # labels / annotations
+AXIS_FS = 6            # axis (tick) labels — hidden, sized for safety
+PAD_FRAC = 0.15        # 15% padding around content
+GRID_COLOR = "#d9d9d9"
+GRID_ALPHA = 0.3
+LABEL_OFFSET = 0.08    # push labels off elements (0.05–0.1 units)
+
+# Arrow styles (mutation_scale ~ arrowhead size).
+_FORCE_ARROW = dict(arrowstyle="-|>", color=ORANGE, lw=1.5, mutation_scale=10)
+_VEL_ARROW = dict(arrowstyle="-|>", color=ORANGE, lw=1.2, ls="--", mutation_scale=8)
+
+
+def _clean_axes(ax, title=None):
+    """Equal aspect, white ground, light-gray grid, no tick marks or labels."""
+    ax.set_aspect("equal")
+    ax.set_facecolor("white")
+    ax.grid(True, color=GRID_COLOR, alpha=GRID_ALPHA, linewidth=0.6)
+    ax.tick_params(length=0, labelbottom=False, labelleft=False, labelsize=AXIS_FS)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    if title:
+        ax.set_title(title, fontsize=TITLE_FS, color=NAVY, pad=8)
+
+
+def _apply_bounds(ax, xs, ys, frac=PAD_FRAC):
+    """Frame the tracked content with `frac` padding on each side."""
+    if not xs or not ys:
+        ax.set_xlim(-1, 5)
+        ax.set_ylim(-1, 5)
+        return
+    xmin, xmax, ymin, ymax = min(xs), max(xs), min(ys), max(ys)
+    dx = (xmax - xmin) or 1.0
+    dy = (ymax - ymin) or 1.0
+    px, py = dx * frac, dy * frac
+    ax.set_xlim(xmin - px, xmax + px)
+    ax.set_ylim(ymin - py, ymax + py)
+
+
 _SUPPORTED = ("block_on_incline", "block_on_flat", "particle_free")
 
 
@@ -62,11 +105,12 @@ def render_fbd(spec: dict) -> str:
     block_label = spec.get("block_label", "")
     t = math.radians(theta)
 
-    fig, ax = plt.subplots(figsize=(6, 6))
-    ax.set_xlim(-3, 3)
-    ax.set_ylim(-3, 3)
-    ax.set_aspect("equal")
-    ax.axis("off")
+    fig, ax = plt.subplots(figsize=FIG_SIZE)
+    xs, ys = [], []
+
+    def _track(*pts):
+        for x, y in pts:
+            xs.append(x); ys.append(y)
 
     # --- surface reference + hatching ---------------------------------
     if archetype == "block_on_incline":
@@ -74,6 +118,7 @@ def render_fbd(spec: dict) -> str:
         ax.plot([-L * math.cos(t), L * math.cos(t)],
                 [-L * math.sin(t), L * math.sin(t)],
                 color=GRAY, lw=2.5, zorder=1)
+        _track((-L * math.cos(t), -L * math.sin(t)), (L * math.cos(t), L * math.sin(t)))
         nx, ny = math.sin(t), -math.cos(t)
         for s in [i / 5.0 for i in range(-12, 13)]:
             bx, by = s * math.cos(t), s * math.sin(t)
@@ -81,6 +126,7 @@ def render_fbd(spec: dict) -> str:
                     color=GRAY, lw=1, zorder=1)
     elif archetype == "block_on_flat":
         ax.plot([-2.7, 2.7], [0, 0], color=GRAY, lw=2.5, zorder=1)
+        _track((-2.7, 0), (2.7, 0))
         for s in [i / 5.0 for i in range(-12, 13)]:
             ax.plot([s, s - 0.18], [0, -0.22], color=GRAY, lw=1, zorder=1)
 
@@ -88,6 +134,7 @@ def render_fbd(spec: dict) -> str:
     if archetype == "particle_free":
         ax.plot(0, 0, "o", color=NAVY, markersize=16, zorder=3)
         cx, cy = 0.0, 0.0
+        _track((0, 0))
     else:
         half = 0.42
         ox, oy = -math.sin(t) * half, math.cos(t) * half
@@ -98,29 +145,30 @@ def render_fbd(spec: dict) -> str:
             corners.append((rx + ox, ry + oy))
         ax.add_patch(plt.Polygon(corners, closed=True, facecolor=NAVY,
                                  edgecolor=BLACK, lw=1.5, zorder=3))
+        _track(*corners)
         cx, cy = ox, oy
         if block_label:
             ax.text(cx, cy, block_label, color="white", ha="center",
-                    va="center", fontsize=13, fontweight="bold", zorder=4)
+                    va="center", fontsize=LABEL_FS + 2, zorder=4)
 
-    # --- force arrows -------------------------------------------------
+    # --- force arrows (label at tip, nudged perpendicular, never on arrow) ---
     arrow_len = 1.35
     for f in forces:
         ang = math.radians(_force_angle_deg(f, theta))
         dx, dy = math.cos(ang), math.sin(ang)
-        ax.annotate("", xy=(cx + arrow_len * dx, cy + arrow_len * dy),
-                    xytext=(cx, cy),
-                    arrowprops=dict(arrowstyle="-|>", color=ORANGE, lw=2.4),
-                    zorder=5)
-        ax.text(cx + (arrow_len + 0.35) * dx, cy + (arrow_len + 0.35) * dy,
-                f.get("label", ""), color=BLACK, ha="center", va="center",
-                fontsize=11, fontweight="bold", zorder=6)
+        tipx, tipy = cx + arrow_len * dx, cy + arrow_len * dy
+        ax.annotate("", xy=(tipx, tipy), xytext=(cx, cy),
+                    arrowprops=_FORCE_ARROW, zorder=5)
+        px, py = -dy, dx  # perpendicular to the arrow
+        lx = tipx + 0.12 * dx + LABEL_OFFSET * px
+        ly = tipy + 0.12 * dy + LABEL_OFFSET * py
+        ax.text(lx, ly, f.get("label", ""), color=BLACK, ha="center",
+                va="center", fontsize=LABEL_FS, zorder=6)
+        _track((tipx, tipy), (lx, ly))
 
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight", dpi=120, facecolor="white")
-    plt.close(fig)
-    buf.seek(0)
-    return base64.b64encode(buf.read()).decode("utf-8")
+    _clean_axes(ax)
+    _apply_bounds(ax, xs, ys)
+    return _fig_to_b64(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +180,10 @@ _DYNAMICS_TYPES = ("gear", "linkage", "mechanism")
 
 def _fig_to_b64(fig) -> str:
     """Serialize a matplotlib figure to a base64 PNG string and close it."""
+    try:
+        fig.tight_layout(pad=1.5)
+    except Exception:
+        pass
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", dpi=120, facecolor="white")
     plt.close(fig)
@@ -171,9 +223,7 @@ def render_dynamics_diagram(fbd_data: dict) -> str:
 def _render_gear_system(data: dict) -> str:
     """Gears as circle outlines, arms/sticks as lines, pivots as dots,
     velocity / angular-velocity vectors as arrows, labels for all quantities."""
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.set_aspect("equal")
-    ax.axis("off")
+    fig, ax = plt.subplots(figsize=FIG_SIZE)
     xs, ys = [], []
 
     def _track(*pts):
@@ -187,80 +237,78 @@ def _render_gear_system(data: dict) -> str:
             ax.plot([x1, x2], [y1, y2], color=NAVY, lw=2.5, solid_capstyle="round", zorder=2)
             _track((x1, y1), (x2, y2))
             if a.get("label"):
-                ax.text((x1 + x2) / 2 + 0.08, (y1 + y2) / 2 + 0.08, a["label"],
-                        color=NAVY, fontsize=9, zorder=6)
+                ax.text((x1 + x2) / 2 + LABEL_OFFSET, (y1 + y2) / 2 + LABEL_OFFSET,
+                        a["label"], color=NAVY, fontsize=LABEL_FS, zorder=6)
         except Exception:
             continue
 
-    # gears as circle outlines with omega label placed outside the circle
+    # gears as circle outlines with the omega label placed OUTSIDE the circle
     for g in (data.get("gears") or []):
         try:
             cx, cy, r = float(g["cx"]), float(g["cy"]), float(g.get("r", 0.5))
             ax.add_patch(plt.Circle((cx, cy), r, fill=False, edgecolor=BLACK, lw=2, zorder=3))
             _track((cx - r, cy - r), (cx + r, cy + r))
             if g.get("label"):
-                ax.text(cx, cy, g["label"], color=BLACK, fontsize=10,
+                ax.text(cx, cy, g["label"], color=BLACK, fontsize=LABEL_FS,
                         ha="center", va="center", zorder=4)
             omega = g.get("omega")
             if omega:
-                ax.text(cx + r + 0.15, cy + r + 0.15, str(omega), color=ORANGE,
-                        fontsize=9, ha="left", va="bottom", zorder=6)
+                # diagonally outside the circle so it never sits on the outline
+                ox = cx + (r + LABEL_OFFSET) * math.cos(math.radians(45))
+                oy = cy + (r + LABEL_OFFSET) * math.sin(math.radians(45))
+                ax.text(ox, oy, str(omega), color=ORANGE, fontsize=LABEL_FS,
+                        ha="left", va="bottom", zorder=6)
+                _track((ox, oy))
         except Exception:
             continue
 
-    # pivot points as filled dots, label offset diagonally
+    # pivot points as filled dots, label offset diagonally (+0.05, +0.05)
     for pv in (data.get("pivots") or []):
         try:
             x, y = float(pv["x"]), float(pv["y"])
-            ax.plot(x, y, "o", color=BLACK, markersize=7, zorder=5)
+            ax.plot(x, y, "o", color=BLACK, markersize=6, zorder=5)
             _track((x, y))
             if pv.get("label"):
-                ax.text(x + 0.08, y + 0.08, pv["label"], color=BLACK, fontsize=9, zorder=6)
+                ax.text(x + 0.05, y + 0.05, pv["label"], color=BLACK,
+                        fontsize=LABEL_FS, zorder=6)
         except Exception:
             continue
 
-    # velocity / angular-velocity vectors as arrows
+    # velocity / angular-velocity vectors as dashed arrows
     for v in (data.get("velocities") or data.get("vectors") or []):
         try:
             x1, y1 = float(v["x"]), float(v["y"])
             dx, dy = float(v.get("dx", 0)), float(v.get("dy", 0))
             ax.annotate("", xy=(x1 + dx, y1 + dy), xytext=(x1, y1),
-                        arrowprops=dict(arrowstyle="-|>", color=ORANGE, lw=2), zorder=5)
+                        arrowprops=_VEL_ARROW, zorder=5)
             _track((x1, y1), (x1 + dx, y1 + dy))
             if v.get("label"):
-                ax.text(x1 + dx + 0.08, y1 + dy + 0.08, v["label"],
-                        color=ORANGE, fontsize=9, zorder=6)
+                ax.text(x1 + dx + LABEL_OFFSET, y1 + dy + LABEL_OFFSET, v["label"],
+                        color=ORANGE, fontsize=LABEL_FS, zorder=6)
         except Exception:
             continue
 
-    # contact points between meshing gears
+    # contact points between meshing gears (labelled)
     for c in (data.get("contacts") or data.get("contact_points") or []):
         try:
             x, y = float(c["x"]), float(c["y"])
-            ax.plot(x, y, "x", color=ORANGE, markersize=8, mew=2, zorder=5)
+            ax.plot(x, y, "x", color=ORANGE, markersize=7, mew=1.5, zorder=5)
             _track((x, y))
             if c.get("label"):
-                ax.text(x + 0.08, y - 0.08, c["label"], color=ORANGE,
-                        fontsize=9, ha="left", va="top", zorder=6)
+                ax.text(x + LABEL_OFFSET, y - LABEL_OFFSET, c["label"], color=ORANGE,
+                        fontsize=LABEL_FS, ha="left", va="top", zorder=6)
         except Exception:
             continue
 
-    if xs and ys:
-        pad = 0.6
-        ax.set_xlim(min(xs) - pad, max(xs) + pad)
-        ax.set_ylim(min(ys) - pad, max(ys) + pad)
-    if data.get("title"):
-        ax.set_title(data["title"], fontsize=10, color=NAVY, pad=8)
-
+    _clean_axes(ax, title=data.get("title"))
+    _apply_bounds(ax, xs, ys)
     return _fig_to_b64(fig)
 
 
 def _render_linkage_system(data: dict) -> str:
     """Rods as lines, pivots as filled circles, sliding joints as rectangles,
     angular-velocity arcs, labels for all quantities."""
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.set_aspect("equal")
-    ax.axis("off")
+    fig, ax = plt.subplots(figsize=FIG_SIZE)
     xs, ys = [], []
 
     def _track(*pts):
@@ -274,8 +322,8 @@ def _render_linkage_system(data: dict) -> str:
             ax.plot([x1, x2], [y1, y2], color=NAVY, lw=3, solid_capstyle="round", zorder=2)
             _track((x1, y1), (x2, y2))
             if rod.get("label"):
-                ax.text((x1 + x2) / 2 + 0.08, (y1 + y2) / 2 + 0.08, rod["label"],
-                        color=NAVY, fontsize=9, zorder=6)
+                ax.text((x1 + x2) / 2 + LABEL_OFFSET, (y1 + y2) / 2 + LABEL_OFFSET,
+                        rod["label"], color=NAVY, fontsize=LABEL_FS, zorder=6)
         except Exception:
             continue
 
@@ -289,23 +337,24 @@ def _render_linkage_system(data: dict) -> str:
                                        facecolor="none", edgecolor=BLACK, lw=2, zorder=3))
             _track((cx - w, cy - h), (cx + w, cy + h))
             if s.get("label"):
-                ax.text(cx + 0.08, cy + h / 2 + 0.08, s["label"],
-                        color=BLACK, fontsize=9, zorder=6)
+                ax.text(cx + LABEL_OFFSET, cy + h / 2 + LABEL_OFFSET, s["label"],
+                        color=BLACK, fontsize=LABEL_FS, zorder=6)
         except Exception:
             continue
 
-    # pivot points as filled circles, label offset diagonally
+    # pivot points as filled circles, label offset diagonally (+0.05, +0.05)
     for pv in (data.get("pivots") or []):
         try:
             x, y = float(pv["x"]), float(pv["y"])
             ax.add_patch(plt.Circle((x, y), 0.06, facecolor=BLACK, edgecolor=BLACK, zorder=5))
             _track((x, y))
             if pv.get("label"):
-                ax.text(x + 0.08, y + 0.08, pv["label"], color=BLACK, fontsize=9, zorder=6)
+                ax.text(x + 0.05, y + 0.05, pv["label"], color=BLACK,
+                        fontsize=LABEL_FS, zorder=6)
         except Exception:
             continue
 
-    # angular-velocity arcs with an arrowhead at the arc end
+    # angular-velocity arcs (no fill) with an arrowhead at the arc end
     for w in (data.get("angular_velocities") or data.get("arcs") or []):
         try:
             cx, cy = float(w["cx"]), float(w["cy"])
@@ -313,23 +362,19 @@ def _render_linkage_system(data: dict) -> str:
             start = float(w.get("start", w.get("start_deg", 0.0)))
             end = float(w.get("end", w.get("end_deg", 120.0)))
             pts = _arc_points(cx, cy, r, start, end)
-            ax.plot([p[0] for p in pts], [p[1] for p in pts], color=ORANGE, lw=2, zorder=4)
-            ax.annotate("", xy=pts[-1], xytext=pts[-2],
-                        arrowprops=dict(arrowstyle="-|>", color=ORANGE, lw=2), zorder=5)
+            ax.plot([p[0] for p in pts], [p[1] for p in pts],
+                    color=ORANGE, lw=1.2, zorder=4)
+            ax.annotate("", xy=pts[-1], xytext=pts[-2], arrowprops=_VEL_ARROW, zorder=5)
             _track((cx - r, cy - r), (cx + r, cy + r))
             if w.get("label"):
                 lx, ly = pts[len(pts) // 2]
-                ax.text(lx + 0.1, ly + 0.1, w["label"], color=ORANGE, fontsize=9, zorder=6)
+                ax.text(lx + LABEL_OFFSET, ly + LABEL_OFFSET, w["label"],
+                        color=ORANGE, fontsize=LABEL_FS, zorder=6)
         except Exception:
             continue
 
-    if xs and ys:
-        pad = 0.6
-        ax.set_xlim(min(xs) - pad, max(xs) + pad)
-        ax.set_ylim(min(ys) - pad, max(ys) + pad)
-    if data.get("title"):
-        ax.set_title(data["title"], fontsize=10, color=NAVY, pad=8)
-
+    _clean_axes(ax, title=data.get("title"))
+    _apply_bounds(ax, xs, ys)
     return _fig_to_b64(fig)
 
 
@@ -351,9 +396,7 @@ def render_schematic(layout: dict) -> str:
     if not prims:
         return ""
 
-    fig, ax = plt.subplots(figsize=(6, 6))
-    ax.set_aspect("equal")
-    ax.axis("off")
+    fig, ax = plt.subplots(figsize=FIG_SIZE)
 
     xs, ys = [], []
     def _track(*pts):
@@ -370,14 +413,14 @@ def render_schematic(layout: dict) -> str:
                 ax.plot([x1, x2], [y1, y2], color=color, lw=4, solid_capstyle="round", zorder=3)
                 _track((x1, y1), (x2, y2))
                 if label:
-                    ax.text((x1 + x2) / 2, (y1 + y2) / 2 + 0.12, label, color=color,
-                            fontsize=9, ha="center", va="bottom", zorder=6)
+                    ax.text((x1 + x2) / 2, (y1 + y2) / 2 + LABEL_OFFSET, label, color=color,
+                            fontsize=LABEL_FS, ha="center", va="bottom", zorder=6)
             elif ptype == "circle":
                 cx, cy, r = float(p["cx"]), float(p["cy"]), float(p.get("r", 0.3))
                 ax.add_patch(plt.Circle((cx, cy), r, fill=False, edgecolor=color, lw=3, zorder=3))
                 _track((cx - r, cy - r), (cx + r, cy + r))
                 if label:
-                    ax.text(cx, cy + r + 0.12, label, color=color, fontsize=9,
+                    ax.text(cx, cy + r + LABEL_OFFSET, label, color=color, fontsize=LABEL_FS,
                             ha="center", va="bottom", zorder=6)
             elif ptype == "box":
                 cx, cy = float(p["cx"]), float(p["cy"])
@@ -386,48 +429,35 @@ def render_schematic(layout: dict) -> str:
                                            facecolor=color, edgecolor=BLACK, lw=1.5, zorder=3))
                 _track((cx - w / 2, cy - h / 2), (cx + w / 2, cy + h / 2))
                 if label:
-                    ax.text(cx, cy, label, color="white", fontsize=9, ha="center",
-                            va="center", fontweight="bold", zorder=4)
+                    ax.text(cx, cy, label, color="white", fontsize=LABEL_FS, ha="center",
+                            va="center", zorder=4)
             elif ptype == "point":
                 x, y = float(p["x"]), float(p["y"])
                 ax.plot(x, y, "o", color=color, markersize=9, zorder=4)
                 _track((x, y))
                 if label:
-                    ax.text(x, y - 0.18, label, color=color, fontsize=8.5,
-                            ha="center", va="top", zorder=6)
+                    ax.text(x + 0.05, y - 0.05, label, color=color, fontsize=LABEL_FS,
+                            ha="left", va="top", zorder=6)
             elif ptype == "arrow":
                 x1, y1, x2, y2 = float(p["x1"]), float(p["y1"]), float(p["x2"]), float(p["y2"])
                 ax.annotate("", xy=(x2, y2), xytext=(x1, y1),
-                            arrowprops=dict(arrowstyle="-|>", color=color, lw=2.2), zorder=5)
+                            arrowprops=dict(arrowstyle="-|>", color=color, lw=1.5,
+                                            mutation_scale=10), zorder=5)
                 _track((x1, y1), (x2, y2))
                 if label:
-                    ax.text(x2, y2 + 0.12, label, color=color, fontsize=8.5,
+                    ax.text(x2, y2 + LABEL_OFFSET, label, color=color, fontsize=LABEL_FS,
                             ha="center", va="bottom", zorder=6)
             elif ptype == "note":
                 x, y = float(p.get("x", 0.0)), float(p.get("y", 0.0))
-                ax.text(x, y, p.get("text", ""), color=GRAY, fontsize=8,
+                ax.text(x, y, p.get("text", ""), color=GRAY, fontsize=LABEL_FS,
                         ha="left", va="top", style="italic", zorder=6)
                 _track((x, y))
         except Exception:
             continue
 
-    if xs and ys:
-        pad = 0.6
-        ax.set_xlim(min(xs) - pad, max(xs) + pad)
-        ax.set_ylim(min(ys) - pad, max(ys) + pad)
-    else:
-        ax.set_xlim(-1, 5); ax.set_ylim(-1, 5)
-
-    ax.set_title(layout.get("title", "Approximate schematic"), fontsize=10, color=NAVY, pad=8)
-    ax.text(0.5, 0.02, "approximate sketch — not to scale, may be inexact",
-            transform=ax.transAxes, ha="center", va="bottom",
-            fontsize=8, color=GRAY, style="italic")
-
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight", dpi=120, facecolor="white")
-    plt.close(fig)
-    buf.seek(0)
-    return base64.b64encode(buf.read()).decode("utf-8")
+    _clean_axes(ax, title=layout.get("title", "Schematic"))
+    _apply_bounds(ax, xs, ys)
+    return _fig_to_b64(fig)
 
 
 
