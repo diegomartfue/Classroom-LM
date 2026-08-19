@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 from .fbd_renderer import render_fbd, render_schematic, stack_images_vertical
 from .memory import SessionMemory
 from dotenv import load_dotenv
+from model_config import SONNET_MODEL, HAIKU_MODEL, OPUS_MODEL
+from response_utils import extract_text
 
 load_dotenv()
 
@@ -597,13 +599,13 @@ class OrchestratorAgent:
         user_content = f"Conversation so far:\n{history_text}\n\nStudent's latest message:\n{message}"
 
         response = self.client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=HAIKU_MODEL,
             max_tokens=1024,
             temperature=0,
             system=INPUT_PARSER_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
-        return _parse_json(response.content[0].text)
+        return _parse_json(extract_text(response))
 
 
 
@@ -611,23 +613,23 @@ class OrchestratorAgent:
         history_text = _format_history(conversation_history)
         user_content = f"Conversation so far:\n{history_text}\n\nStudent's latest message:\n{message}"
         response = self.client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=HAIKU_MODEL,
             max_tokens=256,
             temperature=0,
             system=ROUTER_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
-        return _parse_json(response.content[0].text)
+        return _parse_json(extract_text(response))
 
     def direct_tutor(self, message: str, route: str) -> str:
         user_content = f"Route: {route}\n\nStudent's message:\n{message}"
         response = self.client.messages.create(
-            model="claude-sonnet-5",
-            max_tokens=1024,
+            model=SONNET_MODEL,
+            max_tokens=1400,
             system=DIRECT_TUTOR_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
-        return response.content[0].text
+        return extract_text(response)
       
       
       
@@ -639,12 +641,12 @@ class OrchestratorAgent:
             f"Student's request:\n{message}"
         )
         response = self.client.messages.create(
-            model="claude-opus-4-7",
+            model=OPUS_MODEL,
             max_tokens=2048,
             system=CREATOR_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
-        return _parse_json(response.content[0].text)
+        return _parse_json(extract_text(response))
       
       
       
@@ -658,12 +660,12 @@ class OrchestratorAgent:
             f"Conversation history:\n{_format_history(conversation_history)}"
         )
         response = self.client.messages.create(
-            model="claude-sonnet-5",
-            max_tokens=1024,
+            model=SONNET_MODEL,
+            max_tokens=1400,
             system=STUDENT_MODELER_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
-        return _parse_json(response.content[0].text)
+        return _parse_json(extract_text(response))
 
     def pedagogical_planner(self, parsed_input: dict, student_model: dict, conversation_history: list, raw_message: str = "") -> dict:
         user_content = (
@@ -673,22 +675,22 @@ class OrchestratorAgent:
             f"Conversation history:\n{_format_history(conversation_history)}"
         )
         response = self.client.messages.create(
-            model="claude-opus-4-7",
+            model=OPUS_MODEL,
             max_tokens=512,
             system=PEDAGOGICAL_PLANNER_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
-        return _parse_json(response.content[0].text)
+        return _parse_json(extract_text(response))
 
     def solver(self, parsed_input: dict) -> dict:
         user_content = f"Problem to solve:\n{json.dumps(parsed_input, indent=2)}"
         response = self.client.messages.create(
-            model="claude-sonnet-5",
-            max_tokens=2048,
+            model=SONNET_MODEL,
+            max_tokens=2700,
             system=SOLVER_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
-        return _parse_json(response.content[0].text)
+        return _parse_json(extract_text(response))
 
     def validator(self, parsed_input: dict, solution: dict) -> dict:
         user_content = (
@@ -696,12 +698,12 @@ class OrchestratorAgent:
             f"Solver's solution:\n{json.dumps(solution, indent=2)}"
         )
         response = self.client.messages.create(
-            model="claude-sonnet-5",
-            max_tokens=1024,
+            model=SONNET_MODEL,
+            max_tokens=1400,
             system=VALIDATOR_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
-        return _parse_json(response.content[0].text)
+        return _parse_json(extract_text(response))
 
 
     
@@ -711,12 +713,12 @@ class OrchestratorAgent:
             f"Solver solution:\n{json.dumps(solution, indent=2)}"
         )
         response = self.client.messages.create(
-            model="claude-opus-4-7",
+            model=OPUS_MODEL,
             max_tokens=1024,
             system=VISUALIZER_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
-        return _parse_json(response.content[0].text)
+        return _parse_json(extract_text(response))
     
     
     def schematic_layout(self, parsed_input: dict, solution: dict | None) -> dict:
@@ -725,12 +727,12 @@ class OrchestratorAgent:
             f"Solver solution (may be null):\n{json.dumps(solution, indent=2)}"
         )
         response = self.client.messages.create(
-            model="claude-sonnet-5",
-            max_tokens=1500,
+            model=SONNET_MODEL,
+            max_tokens=2000,
             system=SCHEMATIC_LAYOUT_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
-        return _parse_json(response.content[0].text)
+        return _parse_json(extract_text(response))
     
     
     def draw_only(self, message: str, conversation_history: list) -> str:
@@ -771,12 +773,12 @@ class OrchestratorAgent:
             f"Solver solution (for reference):\n{json.dumps(solution, indent=2)}"
         )
         response = self.client.messages.create(
-            model="claude-sonnet-5",
-            max_tokens=3000,
+            model=SONNET_MODEL,
+            max_tokens=4000,
             system=DIAGRAM_RENDERER_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
-        code = response.content[0].text.strip()
+        code = extract_text(response).strip()
 
         # Strip markdown fences if Claude adds them anyway
         if code.startswith("```"):
@@ -813,12 +815,12 @@ class OrchestratorAgent:
         }
         user_content = f"Context bundle:\n{json.dumps(context_bundle, indent=2)}"
         response = self.client.messages.create(
-            model="claude-sonnet-5",
-            max_tokens=2048,
+            model=SONNET_MODEL,
+            max_tokens=2700,
             system=CONVERSATIONALIST_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
-        return response.content[0].text
+        return extract_text(response)
 
     # -----------------------------------------------------------------------
     # Main pipeline
@@ -1368,7 +1370,7 @@ class OrchestratorAgent:
             }
             user_content = f"Context bundle:\n{json.dumps(context_bundle, indent=2)}"
             with self.client.messages.stream(
-                model="claude-sonnet-5", max_tokens=2048,
+                model=SONNET_MODEL, max_tokens=2700,
                 system=CONVERSATIONALIST_PROMPT,
                 messages=[{"role": "user", "content": user_content}],
             ) as stream:
@@ -1376,7 +1378,7 @@ class OrchestratorAgent:
                     yield {"type": "token", "text": chunk}
             yield {"type": "done"}
             return
-        
+
 
         if route == "CREATE":
             # Mirrors run(): Modeler -> Planner -> Identifier -> Creator
@@ -1443,7 +1445,7 @@ class OrchestratorAgent:
             }
             user_content = f"Context bundle:\n{json.dumps(context_bundle, indent=2)}"
             with self.client.messages.stream(
-                model="claude-sonnet-5", max_tokens=2048,
+                model=SONNET_MODEL, max_tokens=2700,
                 system=CONVERSATIONALIST_PROMPT,
                 messages=[{"role": "user", "content": user_content}],
             ) as stream:
@@ -1457,7 +1459,7 @@ class OrchestratorAgent:
                 "decision": route, "diagram_image": ""}
             user_content = f"Route: {route}\n\nStudent's message:\n{message}{source_block}"
             with self.client.messages.stream(
-                model="claude-sonnet-5", max_tokens=1024,
+                model=SONNET_MODEL, max_tokens=1400,
                 system=DIRECT_TUTOR_PROMPT,
                 messages=[{"role": "user", "content": user_content}],
             ) as stream:
@@ -1500,7 +1502,7 @@ class OrchestratorAgent:
         }
         user_content = f"Context bundle:\n{json.dumps(context_bundle, indent=2)}"
         with self.client.messages.stream(
-            model="claude-sonnet-5", max_tokens=2048,
+            model=SONNET_MODEL, max_tokens=2700,
             system=CONVERSATIONALIST_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         ) as stream:

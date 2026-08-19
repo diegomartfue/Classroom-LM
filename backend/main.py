@@ -17,6 +17,8 @@ from claude_client import chat
 from sympy_solver import extract_and_solve
 from agents.orchestrator import OrchestratorAgent
 from utils.cost_tracker import estimate_route_cost, REPORT_ROUTES
+from model_config import SONNET_MODEL
+from response_utils import extract_text
 
 app = FastAPI()
 
@@ -138,8 +140,8 @@ async def interpret_endpoint(file: UploadFile = File(...)):
             }
             b64 = base64.standard_b64encode(contents).decode("utf-8")
             response = client.messages.create(
-                model="claude-sonnet-5",
-                max_tokens=1024,
+                model=SONNET_MODEL,
+                max_tokens=1400,
                 messages=[{
                     "role": "user",
                     "content": [
@@ -158,7 +160,7 @@ async def interpret_endpoint(file: UploadFile = File(...)):
                     ],
                 }],
             )
-            extracted_text = response.content[0].text
+            extracted_text = extract_text(response)
 
         elif ext == "pdf":
             from pypdf import PdfReader
@@ -166,14 +168,14 @@ async def interpret_endpoint(file: UploadFile = File(...)):
             reader = PdfReader(io.BytesIO(contents))
             text = "\n".join(page.extract_text() or "" for page in reader.pages)
             response = client.messages.create(
-                model="claude-sonnet-5",
-                max_tokens=1024,
+                model=SONNET_MODEL,
+                max_tokens=1400,
                 messages=[{
                     "role": "user",
                     "content": f"Extract all equations, variables, and diagrams from the following document text. Describe them in plain text.\n\n{text}",
                 }],
             )
-            extracted_text = response.content[0].text
+            extracted_text = extract_text(response)
 
         elif ext in ("docx", "doc"):
             from docx import Document
@@ -181,14 +183,14 @@ async def interpret_endpoint(file: UploadFile = File(...)):
             doc = Document(io.BytesIO(contents))
             text = "\n".join(para.text for para in doc.paragraphs)
             response = client.messages.create(
-                model="claude-sonnet-5",
-                max_tokens=1024,
+                model=SONNET_MODEL,
+                max_tokens=1400,
                 messages=[{
                     "role": "user",
                     "content": f"Extract all equations, variables, and diagrams from the following document text. Describe them in plain text.\n\n{text}",
                 }],
             )
-            extracted_text = response.content[0].text
+            extracted_text = extract_text(response)
 
         else:
             return {"status": "error", "message": "Unsupported file type"}
