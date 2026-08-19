@@ -19,21 +19,22 @@ Run it directly for a formatted report:
 
 from __future__ import annotations
 
+from model_config import SONNET_MODEL, HAIKU_MODEL, OPUS_MODEL
 
 # ---------------------------------------------------------------------------
 # 1. Per-model token costs (USD per 1,000,000 tokens)
 # ---------------------------------------------------------------------------
-# Model ids match the ones used in agents/orchestrator.py.
+# Model ids match the ones used in agents/orchestrator.py (via model_config).
 MODEL_COSTS: dict[str, dict[str, float]] = {
-    "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.00},
-    "claude-sonnet-4-6": {"input": 3.00, "output": 15.00},
-    "claude-opus-4-7": {"input": 15.00, "output": 75.00},
+    HAIKU_MODEL: {"input": 0.80, "output": 4.00},
+    SONNET_MODEL: {"input": 2.00, "output": 10.00},
+    OPUS_MODEL: {"input": 15.00, "output": 75.00},
 }
 
 # Short aliases so the pipeline tables below read cleanly.
-_HAIKU = "claude-haiku-4-5-20251001"
-_SONNET = "claude-sonnet-4-6"
-_OPUS = "claude-opus-4-7"
+_HAIKU = HAIKU_MODEL
+_SONNET = SONNET_MODEL
+_OPUS = OPUS_MODEL
 
 _MILLION = 1_000_000
 

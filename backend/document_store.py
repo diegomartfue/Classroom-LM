@@ -23,6 +23,9 @@ import uuid
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 
+from model_config import SONNET_MODEL
+from response_utils import extract_text
+
 load_dotenv()
 
 # Anchored to the backend directory so it does not matter where uvicorn
@@ -160,10 +163,7 @@ def _anthropic_client():
 
 
 def _response_text(response) -> str:
-    return "".join(
-        block.text for block in response.content
-        if getattr(block, "type", "") == "text"
-    ).strip()
+    return extract_text(response).strip()
 
 
 _TRANSCRIBE_INSTRUCTION = (
@@ -186,8 +186,8 @@ def _extract_pdf_via_vision(data: bytes) -> str:
     b64 = base64.standard_b64encode(data).decode("utf-8")
     try:
         response = client.messages.create(
-            model="claude-sonnet-5",
-            max_tokens=8000,
+            model=SONNET_MODEL,
+            max_tokens=10500,
             messages=[{
                 "role": "user",
                 "content": [
@@ -219,8 +219,8 @@ def _extract_image(data: bytes, ext: str) -> str:
     b64 = base64.standard_b64encode(data).decode("utf-8")
     try:
         response = client.messages.create(
-            model="claude-sonnet-5",
-            max_tokens=4000,
+            model=SONNET_MODEL,
+            max_tokens=5200,
             messages=[{
                 "role": "user",
                 "content": [

@@ -6,6 +6,9 @@ import os
 import anthropic
 from dotenv import load_dotenv
 
+from model_config import SONNET_MODEL
+from response_utils import extract_text
+
 load_dotenv()
 
 SYSTEM_PROMPT = """You are an expert engineering tutor for a classroom assistant platform.
@@ -53,12 +56,12 @@ def chat(message: str, conversation_history: list = []) -> str:
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-5",
-            max_tokens=4096,
+            model=SONNET_MODEL,
+            max_tokens=5500,
             system=SYSTEM_PROMPT.encode('ascii', 'ignore').decode('ascii'),
             messages=messages,
         )
-        return response.content[0].text
+        return extract_text(response)
 
     except anthropic.AuthenticationError:
         return "Error: Invalid Anthropic API key. Please check your ANTHROPIC_API_KEY."

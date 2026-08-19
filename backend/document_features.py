@@ -11,10 +11,12 @@ import anthropic
 from dotenv import load_dotenv
 
 from document_store import get_context, DocumentError
+from model_config import SONNET_MODEL
+from response_utils import extract_text
 
 load_dotenv()
 
-MODEL = "claude-sonnet-5"
+MODEL = SONNET_MODEL
 
 
 def _client():
@@ -55,13 +57,11 @@ def summarize(doc_ids: list, instruction: str = "") -> dict:
 
     response = _client().messages.create(
         model=MODEL,
-        max_tokens=2048,
+        max_tokens=2700,
         system=SUMMARIZER_PROMPT,
         messages=[{"role": "user", "content": user_content}],
     )
-    text = "".join(
-        b.text for b in response.content if getattr(b, "type", "") == "text"
-    ).strip()
+    text = extract_text(response).strip()
 
     return {
         "summary": text,
@@ -227,14 +227,12 @@ def make_quiz(doc_ids: list, num_questions: int = 5) -> dict:
 
     response = _client().messages.create(
         model=MODEL,
-        max_tokens=4096,
+        max_tokens=5500,
         system=QUIZ_PROMPT,
         messages=[{"role": "user", "content": user_content}],
     )
 
-    raw = "".join(
-        b.text for b in response.content if getattr(b, "type", "") == "text"
-    )
+    raw = extract_text(response)
 
     try:
         data = json.loads(_extract_json(raw))
