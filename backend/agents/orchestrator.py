@@ -11,6 +11,7 @@ Pipeline:
 #npm run dev
 
 import json
+import logging
 import os
 import anthropic
 import matplotlib
@@ -28,6 +29,8 @@ from model_config import SONNET_MODEL, HAIKU_MODEL, OPUS_MODEL
 from response_utils import extract_text
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # System prompts
@@ -491,6 +494,21 @@ FORMATTING:
 Return only your response to the student. No JSON. No meta-commentary."""
 
 
+# Shared math-formatting contract for the user-facing, natural-language response
+# agents (Direct Tutor + Conversationalist). Kept in ONE place and appended to
+# both prompts so the frontend's Markdown + KaTeX pipeline always receives math
+# in a renderable form. NOT applied to JSON-producing agents (it would interfere
+# with their strict JSON contracts).
+MATH_FORMATTING = """
+
+MATHEMATICAL FORMATTING:
+- Use LaTeX for all mathematical expressions, variables, symbols, and units.
+- Use $...$ for inline math (e.g. $F = ma$, $v_0$, $\\omega$) and $$...$$ for display equations.
+- Do NOT output bare or plain-text LaTeX/math when it is meant to be rendered — always wrap it in the delimiters above (write $\\omega$, not omega).
+- Keep mathematical notation inside the appropriate delimiters.
+- Do NOT put LaTeX math inside code blocks or inline code unless the student explicitly asks for code.
+- Use ordinary text for non-mathematical dollar amounts / currency (e.g. "it costs 20 dollars"), never math delimiters."""
+
 
 ROUTER_PROMPT = """You are the Router for a 2D dynamics tutoring system. You classify the student's latest message into exactly one route. You do NOT answer the student. You do NOT solve anything.
 
@@ -527,7 +545,7 @@ You receive:
 - the student's message
 
 Behavior by route:
-- CONCEPT: Answer the conceptual dynamics question directly and correctly, briefly (2-5 sentences). A small example is fine. Use inline notation like F = ma, a, v, omega, alpha. Do NOT solve a full numeric problem.
+- CONCEPT: Answer the conceptual dynamics question directly and correctly, briefly (2-5 sentences). A small example is fine. Write any math using LaTeX delimiters (see MATHEMATICAL FORMATTING below). Do NOT solve a full numeric problem.
 - SMALLTALK: Respond briefly and warmly. If asked what you can do, say you help with 2D dynamics: free-body diagrams, kinematics (position, velocity, acceleration), and kinetics (Newton's second law, work-energy, impulse-momentum). Mention you can also generate practice problems on request.
 - OUT_OF_SCOPE: Gently explain this is outside 2D dynamics (e.g. it's 3D, involves deformation/stress, or fluids/thermo), and offer a dynamics version instead. Do not attempt it.
 
@@ -541,6 +559,12 @@ IMPORTANT: The system CAN render diagrams. Never tell the student you can't draw
 TONE: Warm but not saccharine. A knowledgeable TA, not a cheerleader. Plain prose. Brief.
 
 Return only your response to the student. No JSON. No meta-commentary."""
+
+
+# Give the two user-facing response agents one consistent math-formatting
+# contract (single source of truth in MATH_FORMATTING above).
+DIRECT_TUTOR_PROMPT = DIRECT_TUTOR_PROMPT + MATH_FORMATTING
+CONVERSATIONALIST_PROMPT = CONVERSATIONALIST_PROMPT + MATH_FORMATTING
 
 
 CREATOR_PROMPT = """You create 2D dynamics practice problems for an engineering tutor. You handle TWO jobs and decide which from the student's message:
@@ -621,8 +645,10 @@ class OrchestratorAgent:
         )
         return _parse_json(extract_text(response))
 
-    def direct_tutor(self, message: str, route: str) -> str:
-        user_content = f"Route: {route}\n\nStudent's message:\n{message}"
+    def direct_tutor(self, message: str, route: str,
+                     conversation_history: list | None = None) -> str:
+        convo = _conversation_block(conversation_history or [])
+        user_content = f"Route: {route}\n\n{convo}Current student message:\n{message}"
         response = self.client.messages.create(
             model=SONNET_MODEL,
             max_tokens=1400,
@@ -803,6 +829,7 @@ class OrchestratorAgent:
         solution: dict | None,
         validation: dict | None,
         visualization: dict | None,
+        conversation_history: list | None = None,
     ) -> str:
         context_bundle = {
             "student_message": student_message,
@@ -813,7 +840,8 @@ class OrchestratorAgent:
             "validation": validation,
             "visualization": visualization,
         }
-        user_content = f"Context bundle:\n{json.dumps(context_bundle, indent=2)}"
+        convo = _conversation_block(conversation_history or [])
+        user_content = f"{convo}Context bundle:\n{json.dumps(context_bundle, indent=2)}"
         response = self.client.messages.create(
             model=SONNET_MODEL,
             max_tokens=2700,
@@ -942,7 +970,7 @@ class OrchestratorAgent:
 
         # ---------- CONCEPT / SMALLTALK / OUT_OF_SCOPE: single Direct Tutor ----------
         if route in ("CONCEPT", "SMALLTALK", "OUT_OF_SCOPE"):
-            response_text = self.direct_tutor(message, route)
+            response_text = self.direct_tutor(message, route, conversation_history)
             _log("direct_tutor", {"response": response_text})
             return {
                 "response": response_text,
@@ -1038,6 +1066,7 @@ class OrchestratorAgent:
                 solution=None,
                 validation=validation,
                 visualization=visualization,
+                conversation_history=conversation_history,
             )
             _log("conversationalist", {"response": response_text})
             return {
@@ -1134,6 +1163,7 @@ class OrchestratorAgent:
                 solution=created,
                 validation=validation,
                 visualization=visualization,
+                conversation_history=conversation_history,
             )
             _log("conversationalist", {"response": response_text})
             return {
@@ -1189,6 +1219,7 @@ class OrchestratorAgent:
             solution=solution,
             validation=validation,
             visualization=visualization,
+            conversation_history=conversation_history,
         )
         _log("conversationalist", {"response": response_text})
 
@@ -1291,8 +1322,12 @@ class OrchestratorAgent:
 
         route_decision = self.router(message, conversation_history)
         route = route_decision.get("route", "PROBLEM")
-        
-        
+
+        # Labeled prior-conversation block, injected into the FINAL response
+        # agents (direct_tutor + conversationalist) so the reply has
+        # current-conversation memory. Empty string when there is no history.
+        convo = _conversation_block(conversation_history)
+
         if route == "DRAW":
             wants_multi = any(w in message.lower() for w in ("these", "them", "those", "all", "each"))
             created_problems = _find_recent_created(conversation_history)
@@ -1368,7 +1403,7 @@ class OrchestratorAgent:
                 "solution": None, "validation": validation, "visualization": visualization,
                 "source_documents": source_block,
             }
-            user_content = f"Context bundle:\n{json.dumps(context_bundle, indent=2)}"
+            user_content = f"{convo}Context bundle:\n{json.dumps(context_bundle, indent=2)}"
             with self.client.messages.stream(
                 model=SONNET_MODEL, max_tokens=2700,
                 system=CONVERSATIONALIST_PROMPT,
@@ -1443,7 +1478,7 @@ class OrchestratorAgent:
                 "solution": created, "validation": validation, "visualization": visualization,
                 "source_documents": source_block,
             }
-            user_content = f"Context bundle:\n{json.dumps(context_bundle, indent=2)}"
+            user_content = f"{convo}Context bundle:\n{json.dumps(context_bundle, indent=2)}"
             with self.client.messages.stream(
                 model=SONNET_MODEL, max_tokens=2700,
                 system=CONVERSATIONALIST_PROMPT,
@@ -1457,7 +1492,7 @@ class OrchestratorAgent:
         if route in ("CONCEPT", "SMALLTALK", "OUT_OF_SCOPE"):
             yield {"type": "meta", "student_model": student_model, "route": route,
                 "decision": route, "diagram_image": ""}
-            user_content = f"Route: {route}\n\nStudent's message:\n{message}{source_block}"
+            user_content = f"Route: {route}\n\n{convo}Current student message:\n{message}{source_block}"
             with self.client.messages.stream(
                 model=SONNET_MODEL, max_tokens=1400,
                 system=DIRECT_TUTOR_PROMPT,
@@ -1500,7 +1535,7 @@ class OrchestratorAgent:
             "solution": solution, "validation": validation, "visualization": visualization,
             "source_documents": source_block,
         }
-        user_content = f"Context bundle:\n{json.dumps(context_bundle, indent=2)}"
+        user_content = f"{convo}Context bundle:\n{json.dumps(context_bundle, indent=2)}"
         with self.client.messages.stream(
             model=SONNET_MODEL, max_tokens=2700,
             system=CONVERSATIONALIST_PROMPT,
@@ -1585,15 +1620,35 @@ def _new_session_id() -> str:
     return f"{stamp}-{uuid.uuid4().hex[:8]}"
 
 
-def _format_history(conversation_history: list) -> str:
+# Cap on how many recent turns get formatted into any prompt, to keep the
+# current-conversation memory from growing the prompt without bound. Only the
+# most recent MAX_HISTORY_MESSAGES messages are ever included.
+MAX_HISTORY_MESSAGES = 20
+
+
+def _format_history(conversation_history: list,
+                    max_messages: int = MAX_HISTORY_MESSAGES) -> str:
+    """Central formatter for conversation history. Includes only the most
+    recent ``max_messages`` turns (oldest are dropped)."""
     if not conversation_history:
         return "(no prior conversation)"
+    recent = conversation_history[-max_messages:] if max_messages else conversation_history
     lines = []
-    for msg in conversation_history:
+    for msg in recent:
         role = msg.get("role", "user").capitalize()
         content = msg.get("content", "")
         lines.append(f"{role}: {content}")
     return "\n".join(lines)
+
+
+def _conversation_block(conversation_history: list) -> str:
+    """Labeled prior-conversation block for the final response agents, clearly
+    separated from the current message. Returns "" when there is no history so
+    the current message is never preceded by an empty header. Reuses the single
+    central formatter (_format_history) — no duplicated formatting logic."""
+    if not conversation_history:
+        return ""
+    return f"Previous conversation:\n{_format_history(conversation_history)}\n\n"
   
   
   
@@ -1629,8 +1684,17 @@ def _render_created_problems(created: dict) -> str:
 def _parse_json(text: str) -> dict:
     """
     Extract and parse a JSON object from the model's response.
-    Strips markdown code fences if present. Returns a dict with
-    a 'parse_error' key if JSON decoding fails.
+
+    Strips markdown code fences if present. This is the JSON failure boundary:
+    on malformed/empty/non-JSON output it returns a dict carrying a
+    ``parse_error`` key (and the raw response for debugging) rather than
+    raising, and logs a warning so the failure is never silent. Downstream
+    consumers must treat a ``parse_error`` result as invalid agent output.
+
+    Note: this is a DIFFERENT failure class from the ThinkingBlock/text
+    extraction issue, which is handled upstream by response_utils.extract_text.
+    An empty ``text`` here (e.g. a response with no text block) still yields a
+    logged parse_error rather than a crash.
     """
     stripped = text.strip()
     # Remove ```json ... ``` or ``` ... ``` fences
@@ -1644,6 +1708,11 @@ def _parse_json(text: str) -> dict:
     try:
         return json.loads(stripped)
     except json.JSONDecodeError as exc:
+        # Never silent: log a truncated snippet (not the full body) so malformed
+        # agent output is diagnosable without dumping large/sensitive content.
+        snippet = (text or "")[:200].replace("\n", "\\n")
+        logger.warning("Agent returned unparseable JSON (%s). First 200 chars: %r",
+                       exc, snippet)
         return {"parse_error": str(exc), "raw_response": text}
     
     

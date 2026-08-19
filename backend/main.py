@@ -6,6 +6,8 @@ import shutil
 import os
 import base64
 import json
+import logging
+import uuid
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +21,8 @@ from agents.orchestrator import OrchestratorAgent
 from utils.cost_tracker import estimate_route_cost, REPORT_ROUTES
 from model_config import SONNET_MODEL
 from response_utils import extract_text
+
+logger = logging.getLogger("classroomlm.tutor")
 
 app = FastAPI()
 
@@ -270,7 +274,20 @@ def tutor_stream_endpoint(request: TutorRequest):
                                           request.student_model, source_text):
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'text': str(e)})}\n\n"
+            # Log the full traceback server-side for diagnosis; send the frontend
+            # only a safe, generic message (no stack trace, no exception detail).
+            # We deliberately avoid logging API keys, conversation history, or
+            # document contents — only the failure itself and a correlation id.
+            request_id = uuid.uuid4().hex[:8]
+            logger.exception(
+                "tutor/stream failed (request_id=%s, exc_type=%s, doc_count=%d)",
+                request_id, type(e).__name__, len(request.doc_ids or []),
+            )
+            safe_text = (
+                "Sorry — the tutor hit an unexpected error while working on that. "
+                f"Please try again. (ref {request_id})"
+            )
+            yield f"data: {json.dumps({'type': 'error', 'text': safe_text})}\n\n"
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 

@@ -24,7 +24,9 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 from model_config import SONNET_MODEL
-from response_utils import extract_text
+# Aliased to avoid colliding with this module's own extract_text(filename, data),
+# which extracts text from an uploaded FILE (not from a Claude response).
+from response_utils import extract_text as extract_response_text
 
 load_dotenv()
 
@@ -163,7 +165,7 @@ def _anthropic_client():
 
 
 def _response_text(response) -> str:
-    return extract_text(response).strip()
+    return extract_response_text(response).strip()
 
 
 _TRANSCRIBE_INSTRUCTION = (

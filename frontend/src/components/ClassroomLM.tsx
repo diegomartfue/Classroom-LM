@@ -2,8 +2,10 @@
 // Drop-in replacement for your main chat component.
 // Assumes backend endpoints: POST /query (RAG), POST /chat (general/math), POST /upload
 
-import { useState, useRef, useEffect, type KeyboardEvent } from 'react';
-import katex from 'katex';
+import { useState, useRef, useEffect, memo, type KeyboardEvent } from 'react';
+import Markdown from 'react-markdown';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import './ClassroomLM.css';
 
@@ -573,11 +575,16 @@ async function sendMessage(overrideText?: string) {
             <WelcomeScreen onPick={text => sendMessage(text)} />
           ) : (
             <div className="clm-messages-inner">
-              {messages
-                .filter(m => !(m.role === 'ai' && m.content === ''))
-                .map(m => (
-                  <MessageView key={m.id} m={m} />
-                ))}
+              {(() => {
+                const visible = messages.filter(m => !(m.role === 'ai' && m.content === ''));
+                return visible.map((m, i) => (
+                  <MessageView
+                    key={m.id}
+                    m={m}
+                    isStreaming={isLoading && i === visible.length - 1 && m.role === 'ai'}
+                  />
+                ));
+              })()}
               {isLoading && messages[messages.length - 1]?.content === '' && <TypingBubble />}
               <div ref={messagesEndRef} />
             </div>
@@ -658,7 +665,27 @@ function WelcomeScreen({ onPick }: { onPick: (text: string) => void }) {
   );
 }
 
-function MessageView({ m }: { m: Message }) {
+// Completed assistant messages render through the Markdown + remark-math +
+// rehype-katex pipeline. Memoized on `content` so unrelated re-renders don't
+// re-parse it. rehype-katex runs with throwOnError:false so one malformed
+// expression can't break the rest of the message. remark-math leaves math
+// inside code blocks/inline code untouched, and treats a lone `$20` as text.
+const MarkdownMessage = memo(function MarkdownMessage({ content }: { content: string }) {
+  return (
+    <Markdown
+      remarkPlugins={[remarkMath]}
+      rehypePlugins={[[rehypeKatex, { throwOnError: false }]]}
+    >
+      {content}
+    </Markdown>
+  );
+});
+
+function MessageView({ m, isStreaming }: { m: Message; isStreaming?: boolean }) {
+  // Render the full Markdown/KaTeX pipeline only for COMPLETED assistant
+  // messages. While streaming (and for user messages) show cheap plain text so
+  // math isn't re-parsed on every token and partial LaTeX doesn't flicker.
+  const renderAsMarkdown = m.role === 'ai' && !isStreaming;
   return (
     <div className={`clm-message ${m.role}`}>
       <div className="clm-msg-avatar">{m.role === 'user' ? 'E' : 'C'}</div>
@@ -671,11 +698,11 @@ function MessageView({ m }: { m: Message }) {
             </span>
           )}
         </div>
-        <div className="clm-msg-content"
-          dangerouslySetInnerHTML={{
-            __html: m.role === 'ai' ? renderContent(m.content) : renderPlain(m.content),
-          }}
-        />
+        <div className="clm-msg-content">
+          {renderAsMarkdown
+            ? <MarkdownMessage content={m.content} />
+            : <div style={{ whiteSpace: 'pre-wrap' }}>{m.content}</div>}
+        </div>
         {m.diagram && (
           <img
             src={`data:image/png;base64,${m.diagram}`}
@@ -739,57 +766,6 @@ const SendIcon = () => (
 // ==================== Utils ====================
 function truncate(s: string, n: number) {
   return s.length <= n ? s : s.slice(0, n - 1) + '…';
-}
-
-// Escape a raw string for safe insertion into HTML (used when KaTeX fails so
-// we surface the original snippet as text instead of markup).
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-// Lightweight plain-text formatting: bold, italic, and newlines. This is the
-// fallback for any non-math content (and preserves the prior render behavior).
-function renderPlain(text: string): string {
-  return text
-    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.*?)\*/g, '<em>$1</em>')
-    .replace(/\n/g, '<br/>');
-}
-
-// Matches block math ($$...$$) first, then inline math ($...$). The capturing
-// group makes String.prototype.split keep the delimited math segments so we
-// can render them separately from the surrounding text.
-const MATH_SPLIT = /(\$\$[\s\S]+?\$\$|\$[^$\n]+?\$)/g;
-
-// Render a message body, turning $...$ into inline math and $$...$$ into
-// display math via KaTeX, and leaving everything else as plain (lightly
-// formatted) text. Malformed math never crashes the render: KaTeX runs with
-// throwOnError:false, and any unexpected failure falls back to the raw snippet.
-function renderContent(text: string): string {
-  return text
-    .split(MATH_SPLIT)
-    .map(part => {
-      if (!part) return '';
-      const isBlock = part.length >= 4 && part.startsWith('$$') && part.endsWith('$$');
-      const isInline = !isBlock && part.length >= 2 && part.startsWith('$') && part.endsWith('$');
-      if (isBlock || isInline) {
-        const tex = isBlock ? part.slice(2, -2) : part.slice(1, -1);
-        try {
-          return katex.renderToString(tex, {
-            displayMode: isBlock,
-            throwOnError: false,
-          });
-        } catch {
-          // KaTeX threw despite throwOnError:false — show the original text.
-          return escapeHtml(part);
-        }
-      }
-      return renderPlain(part);
-    })
-    .join('');
 }
 
 
