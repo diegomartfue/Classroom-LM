@@ -233,23 +233,33 @@ def cost_estimate_endpoint():
 
 @app.post("/tutor", response_model=TutorResponse)
 def tutor_endpoint(request: TutorRequest):
-    agent = OrchestratorAgent()
-    result = agent.run(request.message, request.conversation_history, request.student_model)
-    return TutorResponse(
-        response=result["response"],
-        decision=result["plan"].get("decision", result["plan"].get("action", "UNKNOWN")),
-        student_model=result["updated_student_model"],
-        diagram_image=result.get("diagram_image", ""),
-        route=result.get("route", ""),
-        metadata={
-            "parsed_input": result["parsed_input"],
-            "plan": result["plan"],
-            "solution": result["solution"],
-            "validation": result["validation"],
-            "visualization": result["visualization"],
-            "route": result.get("route"),
-        },
-    )
+    try:
+        agent = OrchestratorAgent()
+        result = agent.run(request.message, request.conversation_history, request.student_model)
+        return TutorResponse(
+            response=result["response"],
+            decision=result["plan"].get("decision", result["plan"].get("action", "UNKNOWN")),
+            student_model=result["updated_student_model"],
+            diagram_image=result.get("diagram_image", ""),
+            route=result.get("route", ""),
+            metadata={
+                "parsed_input": result["parsed_input"],
+                "plan": result["plan"],
+                "solution": result["solution"],
+                "validation": result["validation"],
+                "visualization": result["visualization"],
+                "route": result.get("route"),
+            },
+        )
+    except Exception as e:
+        # Never let an unexpected pipeline or serialization error surface as a
+        # raw 500 to the student — return a graceful, well-formed response.
+        return TutorResponse(
+            response="I encountered an error processing your request. Please try again.",
+            decision="ERROR",
+            student_model=request.student_model,
+            metadata={"error": str(e)},
+        )
     
 
 

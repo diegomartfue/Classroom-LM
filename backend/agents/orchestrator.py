@@ -901,7 +901,7 @@ class OrchestratorAgent:
                 "visualization": None,
                 "diagram_image": "",
                 "parsed_input": None,
-                "route": None,
+                "route": "PROBLEM",
                 "route_decision": None,
                 "low_confidence": True,
             }
@@ -915,6 +915,11 @@ class OrchestratorAgent:
             pass
 
         result.setdefault("low_confidence", False)
+        # Guarantee a non-None route so downstream consumers (e.g. the /tutor
+        # response model, which types route as str) never receive None. Any
+        # error path that could not determine a route defaults to "PROBLEM".
+        if result.get("route") is None:
+            result["route"] = "PROBLEM"
         result["session_id"] = session_id
         result["turn_number"] = turn_number
         return result
