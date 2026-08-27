@@ -228,11 +228,13 @@ async function sendMessage(overrideText?: string) {
     const text = (overrideText ?? input).trim();
     if (!text || isLoading) return;
 
-    // Read the accumulated history for THIS conversation from the ref (it
-    // persists across re-renders without triggering them). This is the full
-    // prior history; the current turn is appended to the ref below, only after
-    // the response has streamed in.
-    const conversationHistory = conversationHistoryRef.current;
+    // Snapshot the accumulated history for THIS conversation from the ref (it
+    // persists across re-renders without triggering them). Copying into a new
+    // array decouples the outgoing request payload from any later mutation of
+    // the ref (e.g. a conversation switch) while this request is in flight.
+    // This is the full prior history; the current turn is appended to the ref
+    // below, only after the response has streamed in.
+    const historySnapshot = [...conversationHistoryRef.current];
 
     const userMsg: Message = { id: `m-${Date.now()}`, role: 'user', content: text };
 
@@ -258,12 +260,15 @@ async function sendMessage(overrideText?: string) {
       }));
 
     try {
+      console.log(
+        `[ClassroomLM] /tutor/stream: sending ${historySnapshot.length} prior message(s) as conversation_history`
+      );
       const res = await fetch(`${API_BASE}/tutor/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: text,
-          conversation_history: conversationHistory,
+          conversation_history: historySnapshot,
           student_model: studentModel,
           doc_ids: selectedDocIds,
         }),
@@ -315,11 +320,13 @@ async function sendMessage(overrideText?: string) {
 
       if (!streamed) patchAi({ content: '(no response)' });
 
-      // Append this completed turn (user + assistant) to the history ref so the
-      // next /tutor/stream request carries the full accumulated history, and
-      // persist it under "conversation_history_{activeId}".
+      // Append this completed turn (user + assistant) to the history in a
+      // single operation, building on the snapshot taken before the request so
+      // the accumulated history stays correct even if the ref was reset by a
+      // conversation switch while this request was in flight. Persist it under
+      // "conversation_history_{activeId}" right after the append.
       conversationHistoryRef.current = [
-        ...conversationHistoryRef.current,
+        ...historySnapshot,
         { role: 'user', content: text },
         { role: 'assistant', content: streamed || '(no response)' },
       ];
@@ -665,18 +672,37 @@ function WelcomeScreen({ onPick }: { onPick: (text: string) => void }) {
   );
 }
 
+// remark-math treats a lone `$` as a possible inline-math delimiter, so two
+// currency amounts in the same block (e.g. "you pay $5 and save $10") get
+// mis-paired and the text between them renders as math. Escaping every `$` that
+// is immediately followed by a digit turns it into a literal dollar sign that
+// remark-math ignores. Code spans/blocks are left untouched (backslash escapes
+// aren't processed there, so `\$` would show up verbatim in code). Real inline
+// math like `$x = 5$` is unaffected because its opening `$` is followed by a
+// letter/space, not a digit.
+function escapeCurrencyDollars(text: string): string {
+  return text
+    .split(/(```[\s\S]*?```|`[^`]*`)/g)
+    .map((segment, i) =>
+      // Odd indices are the captured code segments — leave them verbatim.
+      i % 2 === 1 ? segment : segment.replace(/\$(?=\d)/g, '\\$')
+    )
+    .join('');
+}
+
 // Completed assistant messages render through the Markdown + remark-math +
 // rehype-katex pipeline. Memoized on `content` so unrelated re-renders don't
 // re-parse it. rehype-katex runs with throwOnError:false so one malformed
 // expression can't break the rest of the message. remark-math leaves math
-// inside code blocks/inline code untouched, and treats a lone `$20` as text.
+// inside code blocks/inline code untouched; currency like "$5"/"$10" is escaped
+// (see escapeCurrencyDollars) so it stays text instead of being paired as math.
 const MarkdownMessage = memo(function MarkdownMessage({ content }: { content: string }) {
   return (
     <Markdown
       remarkPlugins={[remarkMath]}
       rehypePlugins={[[rehypeKatex, { throwOnError: false }]]}
     >
-      {content}
+      {escapeCurrencyDollars(content)}
     </Markdown>
   );
 });
