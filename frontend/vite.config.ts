@@ -12,4 +12,12 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  server: {
+    fs: {
+      allow: ['..', 'node_modules/katex/dist/fonts'],
+    },
+  },
+  optimizeDeps: {
+    include: ['katex'],
+  },
 });
