@@ -382,46 +382,7 @@ RULES:
 
 Return ONLY the JSON."""
 
-VISUALIZER_PROMPT = """You produce a structured free-body-diagram (FBD) spec for a SINGLE-BODY 2D dynamics problem. A deterministic renderer draws from your spec — you do NOT write code.
-
-INPUT: the parsed problem and the solver's solution.
-
-OUTPUT strict JSON:
-{
-  "renderable": true | false,
-  "unrenderable_reason": "..." | null,
-  "archetype": "block_on_incline" | "block_on_flat" | "particle_free" | "unsupported",
-  "incline_angle_deg": 25,
-  "block_label": "A",
-  "forces": [
-    {"label": "W = 117.7 N", "kind": "weight"},
-    {"label": "N = 106.7 N", "kind": "normal"},
-    {"label": "f = 30 N", "kind": "friction", "along": "up_incline"},
-    {"label": "P = 40 N", "kind": "applied", "angle_deg": 0},
-    {"label": "T = 60 N", "kind": "tension", "angle_deg": 90}
-  ]
-}
-
-ARCHETYPE CHOICE:
-- block_on_incline: ONE block/particle on an inclined surface.
-- block_on_flat: ONE block/particle on a horizontal surface.
-- particle_free: ONE particle with forces and no supporting surface (hanging mass, a knot with cables).
-- unsupported: ANYTHING the single-body renderer can't draw faithfully — two or more connected bodies (pulleys, linked blocks), projectile trajectories, rotating rigid bodies (disks/rods with angular motion), or collisions. Set renderable=false with an unrenderable_reason. DO NOT force these into a single-body archetype.
-
-FORCE RULES:
-- Include EVERY force the solver used: weight (always, unless the body is massless), normal (if on a surface), friction (if rough), applied forces, tension.
-- label: short symbol + solved magnitude + unit, e.g. "N = 106.7 N". Use the solver's final values; if a magnitude is unknown, use the symbol alone.
-- kind: one of weight | normal | friction | applied | tension | other.
-- friction "along": "up_incline" if friction points up the slope (body slides/tends down-slope), "down_incline" otherwise. On flat ground these are just the two opposite horizontal directions — pick the one that OPPOSES the motion or applied push.
-- applied / tension / other: give "angle_deg" = global angle, degrees CCW from +x (right=0, up=90, left=180, down=270). On an incline, "up the incline" equals incline_angle_deg.
-- weight and normal: do NOT supply angle_deg — the renderer computes them.
-
-RULES:
-- Only renderable=true for the three single-body archetypes.
-- If the solver returned in_scope=false, set renderable=false.
-- incline_angle_deg = 0 for flat or free-particle.
-
-Return ONLY the JSON object. No prose."""
+VISUALIZER_PROMPT = """You are an expert technical illustrator. Given a physics problem and its solution, draw an accurate, clean, readable SVG diagram. Include: the body/mechanism exactly as described, all forces/reactions with correct labels and directions, support symbols if applicable, and a coordinate system indicator. Output ONLY valid SVG code starting with <svg and ending with </svg>. Make it visually clean: no overlapping text, appropriate font sizes (10-14px), adequate spacing, viewBox sized appropriately, white background. Use standard physics diagram conventions."""
 
 
 
@@ -733,18 +694,24 @@ class OrchestratorAgent:
 
 
     
-    def visualizer(self, parsed_input: dict, solution: dict | None) -> dict:
+    def visualizer(self, parsed_input: dict, solution: dict | None) -> str:
+        """Draw the problem directly as an SVG string (no separate renderer).
+
+        Returns the raw SVG markup (<svg ... </svg>), not a structured spec.
+        """
         user_content = (
             f"Parsed problem:\n{json.dumps(parsed_input, indent=2)}\n\n"
             f"Solver solution:\n{json.dumps(solution, indent=2)}"
         )
         response = self.client.messages.create(
-            model=OPUS_MODEL,
-            max_tokens=1024,
+            # Illustration benefits from the strongest model; falls back to
+            # claude-opus-4-7 if claude-opus-5 is unavailable.
+            model="claude-opus-5",
+            max_tokens=4096,
             system=VISUALIZER_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
-        return _parse_json(extract_text(response))
+        return extract_text(response).strip()
     
     
     def schematic_layout(self, parsed_input: dict, solution: dict | None) -> dict:
@@ -954,18 +921,6 @@ class OrchestratorAgent:
             except Exception:
                 pass
 
-        def _safe_render_fbd(spec) -> str:
-            try:
-                return render_fbd(spec) or ""
-            except Exception:
-                return ""
-
-        def _safe_render_schematic(layout) -> str:
-            try:
-                return render_schematic(layout) or ""
-            except Exception:
-                return ""
-
         # 0. Router classifies the message. Log the route decision to memory
         #    BEFORE the MCO dispatches to any downstream pipeline.
         route_decision = self.router(message, conversation_history)
@@ -997,70 +952,20 @@ class OrchestratorAgent:
             parsed_input = self.input_parser(message, conversation_history)
             _log("input_parser", parsed_input)
 
-            visualization = self.visualizer(parsed_input, None)
-            _log("visualizer", visualization)
+            diagram_svg = self.visualizer(parsed_input, None)
+            _log("visualizer", diagram_svg)
 
-            layout = self.schematic_layout(parsed_input, None)
-            _log("schematic_layout", layout)
-
-            # Validate the FBD: it must contain ALL forces from the parsed problem
-            # and NO extraneous ones. The focused check instruction rides along in
-            # the solution arg so validator() itself stays unchanged.
-            def _validate_fbd(viz: dict) -> dict:
-                return self.validator(
-                    parsed_input,
-                    {
-                        "task": "VALIDATE_FBD_FORCES",
-                        "check": (
-                            "Verify the free-body diagram (the visualizer output below) "
-                            "contains ALL forces present in the parsed problem and NO "
-                            "extraneous forces. Return FAIL if any required force is "
-                            "missing or any force not implied by the problem appears."
-                        ),
-                        "fbd_visualization": viz,
-                    },
-                )
-
-            validation = _validate_fbd(visualization)
+            # The visualizer now returns SVG directly, so validation is a light
+            # non-empty / well-formed check rather than FBD-structure checking.
+            svg_ok = _svg_is_valid(diagram_svg)
+            validation = {
+                "task": "VALIDATE_SVG",
+                "non_empty": bool(diagram_svg.strip()),
+                "well_formed": svg_ok,
+                "overall_verdict": "PASS" if svg_ok else "FAIL",
+            }
             _log("validator", validation)
-            verdict = (validation.get("overall_verdict")
-                       or validation.get("solver_verdict")
-                       or "UNCERTAIN")
-
-            # On FAIL, retry the Visualizer ONCE with the validation errors
-            # injected (via parsed_input), then re-validate the new FBD.
-            if verdict == "FAIL":
-                errors = validation.get("errors_found", [])
-                try:
-                    self.memory.log_error(
-                        session_id,
-                        error={"stage": "draw_fbd", "verdict": verdict, "errors_found": errors},
-                        fix_attempted="re-running visualizer with validation errors injected",
-                        success=False,
-                    )
-                except Exception:
-                    pass
-
-                retry_input = {
-                    **parsed_input,
-                    "validation_feedback": {
-                        "errors_found": errors,
-                        "instruction": ("Your previous free-body diagram failed validation. "
-                                        "Fix these specific force errors (missing or extraneous "
-                                        "forces) and redraw the FBD."),
-                    },
-                }
-                visualization = self.visualizer(retry_input, None)
-                _log("visualizer_retry", visualization)
-
-                validation = _validate_fbd(visualization)
-                _log("validator_retry", validation)
-                verdict = (validation.get("overall_verdict")
-                           or validation.get("solver_verdict")
-                           or "UNCERTAIN")
-
-            low_confidence = verdict == "FAIL"
-            diagram_image = _safe_render_fbd(visualization) or _safe_render_schematic(layout)
+            low_confidence = not svg_ok
 
             plan = {"decision": "DRAW"}
             response_text = self.conversationalist(
@@ -1070,7 +975,7 @@ class OrchestratorAgent:
                 plan=plan,
                 solution=None,
                 validation=validation,
-                visualization=visualization,
+                visualization=diagram_svg,
                 conversation_history=conversation_history,
             )
             _log("conversationalist", {"response": response_text})
@@ -1080,8 +985,8 @@ class OrchestratorAgent:
                 "plan": plan,
                 "solution": None,
                 "validation": validation,
-                "visualization": visualization,
-                "diagram_image": diagram_image,
+                "visualization": diagram_svg,
+                "diagram_svg": diagram_svg,
                 "parsed_input": parsed_input,
                 "route": route,
                 "route_decision": route_decision,
@@ -1141,17 +1046,16 @@ class OrchestratorAgent:
             created = self.creator(creator_message, conversation_history)
             _log("creator", created)
 
-            # 5. Visualizer: run on the Creator's output.
-            visualization = self.visualizer(create_context, created)
-            _log("visualizer", visualization)
-            diagram_image = _safe_render_fbd(visualization)
+            # 5. Visualizer: draw the Creator's output directly as SVG.
+            diagram_svg = self.visualizer(create_context, created)
+            _log("visualizer", diagram_svg)
 
-            # 6. Validator: validate BOTH the Creator and the Visualizer output
-            #    (passed together via the solution arg, keeping validator()
-            #    unchanged).
+            # 6. Validator: validate the Creator's problems only. The visualizer
+            #    now returns SVG (not structured JSON), so FBD-structure
+            #    validation no longer applies.
             validation = self.validator(
                 create_context,
-                {"created_problems": created, "visualization": visualization},
+                {"created_problems": created},
             )
             _log("validator", validation)
             verdict = (validation.get("overall_verdict")
@@ -1167,7 +1071,7 @@ class OrchestratorAgent:
                 plan=plan,
                 solution=created,
                 validation=validation,
-                visualization=visualization,
+                visualization=diagram_svg,
                 conversation_history=conversation_history,
             )
             _log("conversationalist", {"response": response_text})
@@ -1182,8 +1086,8 @@ class OrchestratorAgent:
                 },
                 "solution": created,
                 "validation": validation,
-                "visualization": visualization,
-                "diagram_image": diagram_image,
+                "visualization": diagram_svg,
+                "diagram_svg": diagram_svg,
                 "parsed_input": create_context,
                 "route": route,
                 "route_decision": route_decision,
@@ -1205,7 +1109,7 @@ class OrchestratorAgent:
         solution = None
         validation = None
         visualization = None
-        diagram_image = ""
+        diagram_svg = ""
         low_confidence = False
 
         if plan.get("decision") == "SOLVE":
@@ -1214,7 +1118,7 @@ class OrchestratorAgent:
             )
             visualization = self.visualizer(parsed_input, solution)
             _log("visualizer", visualization)
-            diagram_image = _safe_render_fbd(visualization)
+            diagram_svg = visualization
 
         response_text = self.conversationalist(
             student_message=message,
@@ -1235,7 +1139,7 @@ class OrchestratorAgent:
             "solution": solution,
             "validation": validation,
             "visualization": visualization,
-            "diagram_image": diagram_image if plan.get("decision") == "SOLVE" else "",
+            "diagram_svg": diagram_svg if plan.get("decision") == "SOLVE" else "",
             "parsed_input": parsed_input,
             "route": route,
             "route_decision": route_decision,
@@ -1337,75 +1241,48 @@ class OrchestratorAgent:
             wants_multi = any(w in message.lower() for w in ("these", "them", "those", "all", "each"))
             created_problems = _find_recent_created(conversation_history)
             if wants_multi and created_problems:
-                imgs = [self._draw_created_problem(p) for p in created_problems]
-                stacked = stack_images_vertical(imgs)
-                if stacked:
+                # Draw each created problem directly as SVG (unsolved) and
+                # concatenate the markup — multiple <svg> blocks render stacked.
+                svgs = []
+                for p in created_problems:
+                    stmt = p.get("statement", "")
+                    if not stmt:
+                        continue
+                    parsed_p = self.input_parser(stmt, [])
+                    svg_p = self.visualizer(parsed_p, None)
+                    if _svg_is_valid(svg_p):
+                        svgs.append(svg_p)
+                if svgs:
                     yield {"type": "meta", "student_model": student_model, "route": route,
-                           "decision": "DRAW", "diagram_image": stacked}
+                           "decision": "DRAW", "diagram_svg": "\n".join(svgs)}
                     yield {"type": "token", "text": ("Here are the setups for each problem, drawn "
                             "unsolved so you can work them yourself. Notice the forces on each.")}
                     yield {"type": "done"}
                     return
 
-            # Single-diagram DRAW mirrors run(): Input Parser -> Visualizer
-            # -> Schematic Layout -> Validator[retry] -> Conversationalist.
+            # Single-diagram DRAW mirrors run(): Input Parser -> Visualizer (SVG)
+            # -> Conversationalist. The visualizer draws SVG directly.
             yield {"type": "status", "text": "Sketching the setup…"}
             parsed_input = self.input_parser(message + source_block, conversation_history)
-            visualization = self.visualizer(parsed_input, None)
-            layout = self.schematic_layout(parsed_input, None)
+            diagram_svg = self.visualizer(parsed_input, None)
 
-            # Validator checks the FBD contains ALL forces from the parsed problem
-            # and NO extraneous ones; the focused check rides in the solution arg.
-            def _validate_fbd(viz: dict) -> dict:
-                return self.validator(
-                    parsed_input,
-                    {
-                        "task": "VALIDATE_FBD_FORCES",
-                        "check": (
-                            "Verify the free-body diagram (the visualizer output below) "
-                            "contains ALL forces present in the parsed problem and NO "
-                            "extraneous forces. Return FAIL if any required force is "
-                            "missing or any force not implied by the problem appears."
-                        ),
-                        "fbd_visualization": viz,
-                    },
-                )
-
-            validation = _validate_fbd(visualization)
-            verdict = (validation.get("overall_verdict")
-                       or validation.get("solver_verdict")
-                       or "UNCERTAIN")
-            # On FAIL, retry the Visualizer ONCE with the errors injected, re-validate.
-            if verdict == "FAIL":
-                retry_input = {
-                    **parsed_input,
-                    "validation_feedback": {
-                        "errors_found": validation.get("errors_found", []),
-                        "instruction": ("Your previous free-body diagram failed validation. "
-                                        "Fix these specific force errors (missing or extraneous "
-                                        "forces) and redraw the FBD."),
-                    },
-                }
-                visualization = self.visualizer(retry_input, None)
-                validation = _validate_fbd(visualization)
-
-            try:
-                diagram_image = render_fbd(visualization) or ""
-            except Exception:
-                diagram_image = ""
-            if not diagram_image:
-                try:
-                    diagram_image = render_schematic(layout) or ""
-                except Exception:
-                    diagram_image = ""
+            # Lightweight non-empty / well-formed SVG check (no FBD-structure
+            # validation, since the output is SVG rather than structured JSON).
+            svg_ok = _svg_is_valid(diagram_svg)
+            validation = {
+                "task": "VALIDATE_SVG",
+                "non_empty": bool(diagram_svg.strip()),
+                "well_formed": svg_ok,
+                "overall_verdict": "PASS" if svg_ok else "FAIL",
+            }
 
             yield {"type": "meta", "student_model": student_model, "route": route,
-                   "decision": "DRAW", "diagram_image": diagram_image}
+                   "decision": "DRAW", "diagram_svg": diagram_svg}
 
             context_bundle = {
                 "student_message": message, "parsed_input": parsed_input,
                 "student_model": student_model, "plan": {"decision": "DRAW"},
-                "solution": None, "validation": validation, "visualization": visualization,
+                "solution": None, "validation": validation, "visualization": diagram_svg,
                 "source_documents": source_block,
             }
             user_content = f"{convo}Context bundle:\n{json.dumps(context_bundle, indent=2)}"
@@ -1462,25 +1339,21 @@ class OrchestratorAgent:
             )
             created = self.creator(creator_message, conversation_history)
 
-            # Visualizer runs BEFORE the Validator; the Validator then sees BOTH
-            # the Creator and Visualizer output (passed together via solution).
-            visualization = self.visualizer(create_context, created)
-            try:
-                diagram_image = render_fbd(visualization) or ""
-            except Exception:
-                diagram_image = ""
+            # Visualizer draws the Creator's output directly as SVG. The
+            # Validator checks the created problems only (SVG isn't structured).
+            diagram_svg = self.visualizer(create_context, created)
             validation = self.validator(
                 create_context,
-                {"created_problems": created, "visualization": visualization},
+                {"created_problems": created},
             )
 
             yield {"type": "meta", "student_model": updated_student_model, "route": route,
-                   "decision": "CREATE", "diagram_image": diagram_image}
+                   "decision": "CREATE", "diagram_svg": diagram_svg}
 
             context_bundle = {
                 "student_message": message, "parsed_input": create_context,
                 "student_model": updated_student_model, "plan": plan,
-                "solution": created, "validation": validation, "visualization": visualization,
+                "solution": created, "validation": validation, "visualization": diagram_svg,
                 "source_documents": source_block,
             }
             user_content = f"{convo}Context bundle:\n{json.dumps(context_bundle, indent=2)}"
@@ -1496,7 +1369,7 @@ class OrchestratorAgent:
 
         if route in ("CONCEPT", "SMALLTALK", "OUT_OF_SCOPE"):
             yield {"type": "meta", "student_model": student_model, "route": route,
-                "decision": route, "diagram_image": ""}
+                "decision": route, "diagram_svg": ""}
             user_content = f"Route: {route}\n\n{convo}Current student message:\n{message}{source_block}"
             with self.client.messages.stream(
                 model=SONNET_MODEL, max_tokens=1400,
@@ -1517,7 +1390,7 @@ class OrchestratorAgent:
                                         raw_message=message + source_block)
 
         solution = validation = visualization = None
-        diagram_image = ""
+        diagram_svg = ""
         if plan.get("decision") == "SOLVE":
             yield {"type": "status", "text": "Solving\u2026"}
             solution = self.solver(parsed_input)
@@ -1525,14 +1398,11 @@ class OrchestratorAgent:
             validation = self.validator(parsed_input, solution)
             yield {"type": "status", "text": "Drawing the diagram\u2026"}
             visualization = self.visualizer(parsed_input, solution)
-            diagram_image = render_fbd(visualization)
-            if not diagram_image:
-                layout = self.schematic_layout(parsed_input, solution)
-                diagram_image = render_schematic(layout)
+            diagram_svg = visualization
 
         # meta BEFORE tokens so the frontend can attach diagram + student_model first
         yield {"type": "meta", "student_model": updated_student_model, "route": route,
-            "decision": plan.get("decision", "UNKNOWN"), "diagram_image": diagram_image}
+            "decision": plan.get("decision", "UNKNOWN"), "diagram_svg": diagram_svg}
 
         context_bundle = {
             "student_message": message, "parsed_input": parsed_input,
@@ -1684,6 +1554,17 @@ def _render_created_problems(created: dict) -> str:
             out.append("Find: " + "; ".join(str(f) for f in p["find"]))
 
     return "\n".join(out).strip() or "Here's your problem."
+
+
+def _svg_is_valid(svg: str) -> bool:
+    """True if the string looks like a non-empty, well-formed SVG document.
+
+    The visualizer now returns SVG markup directly (rather than a structured
+    FBD spec), so validation is a lightweight shape check — non-empty, and
+    delimited by <svg ... </svg> — instead of verifying FBD force structure.
+    """
+    s = (svg or "").strip()
+    return bool(s) and s.startswith("<svg") and s.endswith("</svg>")
 
 
 def _parse_json(text: str) -> dict:

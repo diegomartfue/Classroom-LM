@@ -19,6 +19,7 @@ interface Message {
   source?: MessageSource;
   citations?: string[];
   diagram?: string;
+  diagramSvg?: string;
 }
 
 interface Conversation {
@@ -307,6 +308,7 @@ async function sendMessage(overrideText?: string) {
             patchAi({
               source: (evt.decision?.toLowerCase() as MessageSource) ?? 'llm',
               diagram: evt.diagram_image || undefined,
+              diagramSvg: evt.diagram_svg || undefined,
             });
           } else if (evt.type === 'token') {
             streamed += evt.text;
@@ -729,7 +731,21 @@ function MessageView({ m, isStreaming }: { m: Message; isStreaming?: boolean }) 
             ? <MarkdownMessage content={m.content} />
             : <div style={{ whiteSpace: 'pre-wrap' }}>{m.content}</div>}
         </div>
-        {m.diagram && (
+        {m.diagramSvg ? (
+          <div
+            className="clm-msg-diagram"
+            style={{
+              marginTop: '16px',
+              maxWidth: '100%',
+              borderRadius: '8px',
+              border: '1px solid rgba(15,15,15,0.08)',
+              background: '#fff',
+              padding: '8px',
+              overflowX: 'auto',
+            }}
+            dangerouslySetInnerHTML={{ __html: m.diagramSvg }}
+          />
+        ) : m.diagram && (
           <img
             src={`data:image/png;base64,${m.diagram}`}
             alt="Free Body Diagram"
