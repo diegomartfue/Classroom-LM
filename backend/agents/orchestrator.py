@@ -13,6 +13,7 @@ Pipeline:
 import json
 import logging
 import os
+import re
 import anthropic
 import matplotlib
 matplotlib.use('Agg')
@@ -382,7 +383,9 @@ RULES:
 
 Return ONLY the JSON."""
 
-VISUALIZER_PROMPT = """You are an expert technical illustrator. Given a physics problem and its solution, draw an accurate, clean, readable SVG diagram. Include: the body/mechanism exactly as described, all forces/reactions with correct labels and directions, support symbols if applicable, and a coordinate system indicator. Output ONLY valid SVG code starting with <svg and ending with </svg>. Make it visually clean: no overlapping text, appropriate font sizes (10-14px), adequate spacing, viewBox sized appropriately, white background. Use standard physics diagram conventions."""
+VISUALIZER_PROMPT = """You are an expert technical illustrator. Given a physics problem and its solution, draw an accurate, clean, readable SVG diagram. Include: the body/mechanism exactly as described, all forces/reactions with correct labels and directions, support symbols if applicable, and a coordinate system indicator. Output ONLY valid SVG code starting with <svg and ending with </svg>. Make it visually clean: no overlapping text, appropriate font sizes (10-14px), adequate spacing, viewBox sized appropriately, white background. Use standard physics diagram conventions.
+Keep the SVG compact: no comments, no unnecessary groups or decimals beyond 1 place, reuse arrowhead markers via <defs>.
+Keep every element and label fully inside the viewBox with at least 30px of margin on all sides."""
 
 
 
@@ -444,6 +447,7 @@ HARD RULES:
 - WAIT: acknowledge and give space. Very short.
 - Never invent physics content. If the Planner didn't provide it, don't add it.
 - If the student asks something outside 2D dynamics, say so gently and offer to stay on topic.
+- Never output SVG, HTML, or diagram code. If a diagram was rendered, it is displayed to the student separately; refer to it in words only.
 - VERIFICATION HONESTY: If a "validation" object is present and its overall_verdict is NOT "PASS" (i.e. FAIL, UNCERTAIN, or missing), do NOT present the solver's numeric answer as confirmed. Share the setup and approach, state plainly that the result could not be independently verified and may be wrong, and ask the student to double-check it. Do not give a definitive final number in this case. When overall_verdict is "PASS", present the answer normally.
 
 FORMATTING:
@@ -697,21 +701,33 @@ class OrchestratorAgent:
     def visualizer(self, parsed_input: dict, solution: dict | None) -> str:
         """Draw the problem directly as an SVG string (no separate renderer).
 
-        Returns the raw SVG markup (<svg ... </svg>), not a structured spec.
+        Returns the extracted SVG markup (<svg ... </svg>), or "" if the
+        response was truncated or didn't contain a parseable <svg> element.
         """
         user_content = (
             f"Parsed problem:\n{json.dumps(parsed_input, indent=2)}\n\n"
             f"Solver solution:\n{json.dumps(solution, indent=2)}"
         )
         response = self.client.messages.create(
-            # Illustration benefits from the strongest model; falls back to
-            # claude-opus-4-7 if claude-opus-5 is unavailable.
-            model="claude-opus-5",
-            max_tokens=4096,
+            model=OPUS_MODEL,
+            max_tokens=16000,
             system=VISUALIZER_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
-        return extract_text(response).strip()
+        if response.stop_reason == "max_tokens":
+            logger.warning(
+                "visualizer response truncated (stop_reason=max_tokens, "
+                "output_tokens=%s); discarding output",
+                getattr(response.usage, "output_tokens", "?"),
+            )
+            return ""
+        text = extract_text(response)
+        match = _SVG_RE.search(text)
+        if not match:
+            snippet = text[:200].replace("\n", "\\n")
+            logger.warning("visualizer response contained no <svg> element. First 200 chars: %r", snippet)
+            return ""
+        return match.group(0)
     
     
     def schematic_layout(self, parsed_input: dict, solution: dict | None) -> dict:
@@ -975,7 +991,7 @@ class OrchestratorAgent:
                 plan=plan,
                 solution=None,
                 validation=validation,
-                visualization=diagram_svg,
+                visualization=_diagram_status(svg_ok),
                 conversation_history=conversation_history,
             )
             _log("conversationalist", {"response": response_text})
@@ -986,7 +1002,7 @@ class OrchestratorAgent:
                 "solution": None,
                 "validation": validation,
                 "visualization": diagram_svg,
-                "diagram_svg": diagram_svg,
+                "diagram_svg": diagram_svg if svg_ok else "",
                 "parsed_input": parsed_input,
                 "route": route,
                 "route_decision": route_decision,
@@ -1049,6 +1065,7 @@ class OrchestratorAgent:
             # 5. Visualizer: draw the Creator's output directly as SVG.
             diagram_svg = self.visualizer(create_context, created)
             _log("visualizer", diagram_svg)
+            svg_ok = _svg_is_valid(diagram_svg)
 
             # 6. Validator: validate the Creator's problems only. The visualizer
             #    now returns SVG (not structured JSON), so FBD-structure
@@ -1071,7 +1088,7 @@ class OrchestratorAgent:
                 plan=plan,
                 solution=created,
                 validation=validation,
-                visualization=diagram_svg,
+                visualization=_diagram_status(svg_ok),
                 conversation_history=conversation_history,
             )
             _log("conversationalist", {"response": response_text})
@@ -1087,7 +1104,7 @@ class OrchestratorAgent:
                 "solution": created,
                 "validation": validation,
                 "visualization": diagram_svg,
-                "diagram_svg": diagram_svg,
+                "diagram_svg": diagram_svg if svg_ok else "",
                 "parsed_input": create_context,
                 "route": route,
                 "route_decision": route_decision,
@@ -1110,6 +1127,7 @@ class OrchestratorAgent:
         validation = None
         visualization = None
         diagram_svg = ""
+        svg_ok = False
         low_confidence = False
 
         if plan.get("decision") == "SOLVE":
@@ -1118,7 +1136,8 @@ class OrchestratorAgent:
             )
             visualization = self.visualizer(parsed_input, solution)
             _log("visualizer", visualization)
-            diagram_svg = visualization
+            svg_ok = _svg_is_valid(visualization)
+            diagram_svg = visualization if svg_ok else ""
 
         response_text = self.conversationalist(
             student_message=message,
@@ -1127,7 +1146,7 @@ class OrchestratorAgent:
             plan=plan,
             solution=solution,
             validation=validation,
-            visualization=visualization,
+            visualization=_diagram_status(svg_ok),
             conversation_history=conversation_history,
         )
         _log("conversationalist", {"response": response_text})
@@ -1275,14 +1294,16 @@ class OrchestratorAgent:
                 "well_formed": svg_ok,
                 "overall_verdict": "PASS" if svg_ok else "FAIL",
             }
+            logger.info("DRAW visualizer output (svg_ok=%s): %s", svg_ok, diagram_svg[:500])
+            logger.info("DRAW validation: %s", validation)
 
             yield {"type": "meta", "student_model": student_model, "route": route,
-                   "decision": "DRAW", "diagram_svg": diagram_svg}
+                   "decision": "DRAW", "diagram_svg": diagram_svg if svg_ok else ""}
 
             context_bundle = {
                 "student_message": message, "parsed_input": parsed_input,
                 "student_model": student_model, "plan": {"decision": "DRAW"},
-                "solution": None, "validation": validation, "visualization": diagram_svg,
+                "solution": None, "validation": validation, "visualization": _diagram_status(svg_ok),
                 "source_documents": source_block,
             }
             user_content = f"{convo}Context bundle:\n{json.dumps(context_bundle, indent=2)}"
@@ -1342,18 +1363,19 @@ class OrchestratorAgent:
             # Visualizer draws the Creator's output directly as SVG. The
             # Validator checks the created problems only (SVG isn't structured).
             diagram_svg = self.visualizer(create_context, created)
+            svg_ok = _svg_is_valid(diagram_svg)
             validation = self.validator(
                 create_context,
                 {"created_problems": created},
             )
 
             yield {"type": "meta", "student_model": updated_student_model, "route": route,
-                   "decision": "CREATE", "diagram_svg": diagram_svg}
+                   "decision": "CREATE", "diagram_svg": diagram_svg if svg_ok else ""}
 
             context_bundle = {
                 "student_message": message, "parsed_input": create_context,
                 "student_model": updated_student_model, "plan": plan,
-                "solution": created, "validation": validation, "visualization": diagram_svg,
+                "solution": created, "validation": validation, "visualization": _diagram_status(svg_ok),
                 "source_documents": source_block,
             }
             user_content = f"{convo}Context bundle:\n{json.dumps(context_bundle, indent=2)}"
@@ -1391,6 +1413,7 @@ class OrchestratorAgent:
 
         solution = validation = visualization = None
         diagram_svg = ""
+        svg_ok = False
         if plan.get("decision") == "SOLVE":
             yield {"type": "status", "text": "Solving\u2026"}
             solution = self.solver(parsed_input)
@@ -1398,7 +1421,8 @@ class OrchestratorAgent:
             validation = self.validator(parsed_input, solution)
             yield {"type": "status", "text": "Drawing the diagram\u2026"}
             visualization = self.visualizer(parsed_input, solution)
-            diagram_svg = visualization
+            svg_ok = _svg_is_valid(visualization)
+            diagram_svg = visualization if svg_ok else ""
 
         # meta BEFORE tokens so the frontend can attach diagram + student_model first
         yield {"type": "meta", "student_model": updated_student_model, "route": route,
@@ -1407,7 +1431,7 @@ class OrchestratorAgent:
         context_bundle = {
             "student_message": message, "parsed_input": parsed_input,
             "student_model": updated_student_model, "plan": plan,
-            "solution": solution, "validation": validation, "visualization": visualization,
+            "solution": solution, "validation": validation, "visualization": _diagram_status(svg_ok),
             "source_documents": source_block,
         }
         user_content = f"{convo}Context bundle:\n{json.dumps(context_bundle, indent=2)}"
@@ -1556,6 +1580,11 @@ def _render_created_problems(created: dict) -> str:
     return "\n".join(out).strip() or "Here's your problem."
 
 
+# Extracts the first <svg>...</svg> element, tolerating code fences, an
+# <?xml ?> prolog, or leading prose around it in the model's raw response.
+_SVG_RE = re.compile(r"<svg[\s\S]*?</svg>", re.IGNORECASE)
+
+
 def _svg_is_valid(svg: str) -> bool:
     """True if the string looks like a non-empty, well-formed SVG document.
 
@@ -1565,6 +1594,13 @@ def _svg_is_valid(svg: str) -> bool:
     """
     s = (svg or "").strip()
     return bool(s) and s.startswith("<svg") and s.endswith("</svg>")
+
+
+def _diagram_status(svg_ok: bool) -> dict:
+    """Placeholder passed to the conversationalist instead of raw SVG markup,
+    so its reply can't echo the diagram code (and burn its max_tokens budget
+    on it). It only needs to know whether a diagram was rendered."""
+    return {"diagram_rendered": bool(svg_ok)}
 
 
 def _parse_json(text: str) -> dict:

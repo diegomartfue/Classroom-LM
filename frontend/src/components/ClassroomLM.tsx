@@ -1,11 +1,12 @@
 // ClassroomLM.tsx
 // Drop-in replacement for your main chat component.
-// Assumes backend endpoints: POST /query (RAG), POST /chat (general/math), POST /upload
+// Assumes backend endpoints: POST /tutor/stream (tutoring), POST /documents (uploads)
 
-import { useState, useRef, useEffect, memo, type KeyboardEvent } from 'react';
+import { useState, useRef, useEffect, useMemo, memo, type KeyboardEvent } from 'react';
 import Markdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
+import DOMPurify from 'dompurify';
 import 'katex/dist/katex.min.css';
 import './ClassroomLM.css';
 
@@ -575,7 +576,7 @@ async function sendMessage(overrideText?: string) {
           </div>
           <div className="clm-mode-pill">
             <span className="clm-mode-dot" />
-            Claude Sonnet · RAG ready
+            Claude · Ready
           </div>
         </div>
 
@@ -674,37 +675,20 @@ function WelcomeScreen({ onPick }: { onPick: (text: string) => void }) {
   );
 }
 
-// remark-math treats a lone `$` as a possible inline-math delimiter, so two
-// currency amounts in the same block (e.g. "you pay $5 and save $10") get
-// mis-paired and the text between them renders as math. Escaping every `$` that
-// is immediately followed by a digit turns it into a literal dollar sign that
-// remark-math ignores. Code spans/blocks are left untouched (backslash escapes
-// aren't processed there, so `\$` would show up verbatim in code). Real inline
-// math like `$x = 5$` is unaffected because its opening `$` is followed by a
-// letter/space, not a digit.
-function escapeCurrencyDollars(text: string): string {
-  return text
-    .split(/(```[\s\S]*?```|`[^`]*`)/g)
-    .map((segment, i) =>
-      // Odd indices are the captured code segments — leave them verbatim.
-      i % 2 === 1 ? segment : segment.replace(/\$(?=\d)/g, '\\$')
-    )
-    .join('');
-}
-
 // Completed assistant messages render through the Markdown + remark-math +
 // rehype-katex pipeline. Memoized on `content` so unrelated re-renders don't
 // re-parse it. rehype-katex runs with throwOnError:false so one malformed
 // expression can't break the rest of the message. remark-math leaves math
-// inside code blocks/inline code untouched; currency like "$5"/"$10" is escaped
-// (see escapeCurrencyDollars) so it stays text instead of being paired as math.
+// inside code blocks/inline code untouched; the backend prompt tells the
+// model to write currency as plain words (never bare "$5"), so no dollar-sign
+// escaping is needed here.
 const MarkdownMessage = memo(function MarkdownMessage({ content }: { content: string }) {
   return (
     <Markdown
       remarkPlugins={[remarkMath]}
       rehypePlugins={[[rehypeKatex, { throwOnError: false }]]}
     >
-      {escapeCurrencyDollars(content)}
+      {content}
     </Markdown>
   );
 });
@@ -714,6 +698,12 @@ function MessageView({ m, isStreaming }: { m: Message; isStreaming?: boolean }) 
   // messages. While streaming (and for user messages) show cheap plain text so
   // math isn't re-parsed on every token and partial LaTeX doesn't flicker.
   const renderAsMarkdown = m.role === 'ai' && !isStreaming;
+  // LLM-generated SVG is untrusted markup — sanitize before it ever reaches
+  // dangerouslySetInnerHTML. Memoized so re-renders don't re-run DOMPurify.
+  const sanitizedDiagramSvg = useMemo(() => {
+    if (!m.diagramSvg) return '';
+    return DOMPurify.sanitize(m.diagramSvg, { USE_PROFILES: { svg: true, svgFilters: true } }).trim();
+  }, [m.diagramSvg]);
   return (
     <div className={`clm-message ${m.role}`}>
       <div className="clm-msg-avatar">{m.role === 'user' ? 'E' : 'C'}</div>
@@ -731,7 +721,7 @@ function MessageView({ m, isStreaming }: { m: Message; isStreaming?: boolean }) 
             ? <MarkdownMessage content={m.content} />
             : <div style={{ whiteSpace: 'pre-wrap' }}>{m.content}</div>}
         </div>
-        {m.diagramSvg ? (
+        {sanitizedDiagramSvg ? (
           <div
             className="clm-msg-diagram"
             style={{
@@ -743,7 +733,7 @@ function MessageView({ m, isStreaming }: { m: Message; isStreaming?: boolean }) 
               padding: '8px',
               overflowX: 'auto',
             }}
-            dangerouslySetInnerHTML={{ __html: m.diagramSvg }}
+            dangerouslySetInnerHTML={{ __html: sanitizedDiagramSvg }}
           />
         ) : m.diagram && (
           <img

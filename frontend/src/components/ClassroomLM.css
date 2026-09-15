@@ -375,6 +375,11 @@
   border: none;
 }
 
+.clm-msg-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
 .clm-citations {
   margin-top: 12px;
   padding-top: 10px;
