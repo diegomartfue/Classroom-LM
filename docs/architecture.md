@@ -36,7 +36,7 @@ determines which downstream agents run:
 | Route | Path taken | Agents involved |
 |-------|-----------|-----------------|
 | `PROBLEM` | Full tutoring pipeline | Input Parser → Student Modeler → Pedagogical Planner → (Solver → Validator → Visualizer → renderer, only if the Planner decides `SOLVE`) → Conversationalist |
-| `DRAW` | Sketch-only | `draw_only` / `_draw_created_problem` → deterministic renderer |
+| `DRAW` | Sketch-only | Input Parser → Visualizer (draws SVG directly) → Conversationalist |
 | `CREATE` | Problem generation | Creator |
 | `CONCEPT` | Direct answer | Direct Tutor |
 | `SMALLTALK` | Direct answer | Direct Tutor |
@@ -141,6 +141,133 @@ prompt-dependent.
 - **Legacy context.** `contexts/AppContext.tsx` still contains
   `simulateAITutorResponse`, which targets `/chat`; the live UI does not use it.
 - **UI kit.** shadcn/ui components (Radix + Tailwind) live in `components/ui/`.
+
+## DRAW pipeline: history gating and label-collision fixing
+
+Two small deterministic mechanisms sit around the Visualizer to fix problems
+found in earlier manual testing: a DRAW request drawing the *previous* turn's
+problem instead of the one just described, and labels rendering on top of
+each other or on top of arrows.
+
+### 1. History gating via the Router's `problem_scope` field
+
+`input_parser()` prepends the *entire* conversation history to its prompt.
+That's correct for a referential request ("draw that one again") but wrong
+for a self-contained one: a fresh "a 2 kg ball on a 1.5 m string" describing
+its own complete setup would otherwise get parsed alongside an unrelated
+block-on-an-incline problem from three turns earlier, and the model can fuse
+the two into the wrong diagram.
+
+The Router (`ROUTER_PROMPT`, `router()` in `orchestrator.py`) already reads
+the message as an LLM call and classifies routing intent; the fix adds one
+more field to its existing JSON output — `problem_scope`: `"self_contained"`
+or `"referential"` — rather than running a second, independent classifier.
+`_draw_history(route_decision, conversation_history)` reads that field: `[]`
+when `self_contained`, the real history otherwise, including when the field
+is missing/unrecognized (never strip history on an incomplete or
+unparseable router response). Both live DRAW callsites (`run()` and
+`run_stream()`) use it.
+
+This replaced an earlier standalone regex (`_is_self_contained_problem`,
+deleted) that checked the message alone for a quantity + a body noun. The
+regex could not tell "a 10 kg block instead" (referential — it still depends
+on the previous turn for the incline angle, friction, etc.) from a genuinely
+new problem using similar words; the Router sees the whole conversation and
+can.
+
+**Known limits:**
+- This is one more judgment call added to an existing LLM classification
+  call, not a deterministic rule — a router misclassification (rare, but
+  possible, especially on ambiguously-worded messages) now determines
+  history inclusion the way it already determines route. The `run_stream()`
+  streaming path also doesn't currently surface `route_decision` (and so
+  `problem_scope`) in its `"meta"` event, so a caller/tester who wants to
+  observe what the router decided has to instrument `router()` directly
+  rather than read it off the stream.
+- The three-turn gating check this change was meant to be verified against
+  (a self-contained problem, then a self-contained follow-up problem, then a
+  referential tweak on it) has not yet been run against the live API — see
+  "Outstanding verification" below.
+
+### 2. Deterministic label-collision fixing (`backend/agents/svg_layout.py`)
+
+`VISUALIZER_PROMPT`'s LAYOUT PROCESS asks Opus to plan label placement so
+nothing overlaps, but the model is producing a *text* SVG spec with no way to
+actually measure what it drew — it cannot self-check bounding boxes, so
+collisions still happen (a support's point label overlapping its own
+reaction-force label was one observed case). `fix_label_collisions(svg)` is
+the deterministic backstop, wired into `visualizer()` right before it
+returns on the success path (wrapped in try/except — this pass must never
+break a diagram it was only supposed to improve):
+
+1. Parse with `xml.etree.ElementTree` (stdlib) — not `lxml`. Both are
+   importable in the dev venv, but `lxml` is not declared in
+   `backend/requirements.txt`; it's a transitive dependency of another
+   package, not something this codebase can rely on staying installed.
+2. Estimate every `<text>` element's bounding box from a fixed heuristic —
+   `0.55 * font_size * len(text)` wide, `1.2 * font_size` tall, adjusted for
+   `text-anchor` and `dominant-baseline` — rather than measuring real glyphs
+   with PIL. Pillow is also only present transitively (via matplotlib), not
+   a declared backend dependency, so it isn't used here either.
+3. Estimate bounding boxes for every `<line>`, `<path>`, and `<polygon>`
+   (not `<rect>`/`<circle>` — a body outline or background rect would
+   otherwise collide with almost every nearby label). Path curves/arcs are
+   over-approximated from their control/end points, which can only widen an
+   estimated bbox, never hide a real overlap.
+4. For each text that overlaps another text or crosses geometry (4px
+   padding), try candidate offsets in order: 14px further from the diagram
+   center along the label's existing direction, then the four cardinal
+   directions at 14px, then the same four at 28px. The first candidate with
+   no collision *and* that stays inside the 30px viewBox margin wins. A
+   label that finds nothing safe within 40px total displacement is left
+   exactly where it was (logged at debug level) — never an exception.
+5. Only `<text>` elements move; geometry, `<defs>`, markers, and the
+   background are never touched. If nothing needed to move, the original
+   SVG string is returned byte-for-byte unchanged rather than round-tripped
+   through the XML serializer.
+
+**Known limits:**
+- **Single greedy pass, document order.** Each label is evaluated once,
+  against the *current* state of everything else (including labels already
+  moved earlier in the same pass). This resolves most pairwise collisions,
+  but a label can be logged as "no clear spot" and left in place even though
+  a *later* label's move would have cleared the collision for it too — the
+  final result is still correct in that case (the pair no longer overlaps),
+  but the log line looks like a failure when it wasn't one.
+- **Coarse text metrics.** The fixed-ratio width estimate is not real glyph
+  measurement; it can over- or under-estimate a label's true width, which
+  can occasionally cause an unnecessary nudge or, less often, miss a real
+  but narrow overlap.
+- **Approximate path bounding boxes.** Bezier/arc control-point
+  over-approximation means a path's estimated bbox can be noticeably larger
+  than its visual footprint, which can cause a label to be nudged away from
+  a curve it wasn't actually touching.
+- **Doesn't fix everything a bad diagram can have.** It only fixes label vs.
+  label and label vs. geometry collisions. It does not fix wrong physics,
+  wrong force placement, or (per the verification run below) a diagram that
+  never got generated at all because the model's response was truncated.
+
+### Outstanding verification (not yet completed)
+
+Both mechanisms are unit- and pytest-tested against fakes (`pytest tests/ -q`
+in `backend/`: 62 passed as of this writing), and a four-case manual run
+against the live API confirmed `fix_label_collisions` visibly cleans up real
+diagrams (5, 4, and 2 labels moved respectively on the crate/beam/pendulum
+cases, with no visible remaining collisions). Two pieces of the requested
+verification could not be completed in that session because the Anthropic
+API account ran out of credits partway through:
+
+- The 5-force, two-dimension ladder stress case failed outright — the
+  Visualizer's response hit `max_tokens=16000` and was discarded
+  (`stop_reason=max_tokens`), producing no diagram at all. Whether this is a
+  one-off (a verbose generation) or a systematic problem for
+  higher-force-count bodies needs re-running with credits restored, and
+  possibly raising `max_tokens` or trimming `VISUALIZER_PROMPT` if it
+  recurs.
+- The three-turn gating check (self-contained crate → self-contained
+  pendulum → referential "same thing but 3 m string") has not been run
+  end-to-end against the live router, so `problem_scope`'s real-world
+  accuracy on that specific sequence is unconfirmed beyond the unit tests.
 
 ## Notes on current gaps
 

@@ -23,8 +23,8 @@ import io
 import base64
 import uuid
 from datetime import datetime, timezone
-from .fbd_renderer import render_fbd, render_schematic, stack_images_vertical
 from .memory import SessionMemory
+from .svg_layout import fix_label_collisions
 from dotenv import load_dotenv
 from model_config import SONNET_MODEL, HAIKU_MODEL, OPUS_MODEL
 from response_utils import extract_text
@@ -383,9 +383,48 @@ RULES:
 
 Return ONLY the JSON."""
 
-VISUALIZER_PROMPT = """You are an expert technical illustrator. Given a physics problem and its solution, draw an accurate, clean, readable SVG diagram. Include: the body/mechanism exactly as described, all forces/reactions with correct labels and directions, support symbols if applicable, and a coordinate system indicator. Output ONLY valid SVG code starting with <svg and ending with </svg>. Make it visually clean: no overlapping text, appropriate font sizes (10-14px), adequate spacing, viewBox sized appropriately, white background. Use standard physics diagram conventions.
+VISUALIZER_PROMPT = """You are an expert technical illustrator. Given a physics problem and its solution, draw an accurate, clean, readable SVG diagram. Include: the body/mechanism exactly as described, all forces/reactions with correct labels and directions, support symbols if applicable, and a coordinate system indicator. Output ONLY valid SVG code starting with <svg and ending with </svg>. Use standard physics diagram conventions and a white background.
+
 Keep the SVG compact: no comments, no unnecessary groups or decimals beyond 1 place, reuse arrowhead markers via <defs>.
-Keep every element and label fully inside the viewBox with at least 30px of margin on all sides."""
+
+LAYOUT PROCESS (plan all coordinates before emitting any SVG)
+1. viewBox 600x400 unless geometry demands more. 30px margin on all sides for
+   every element and label.
+2. Body near center, roughly 40% of width, open space around it for arrows.
+3. Decide every arrow's start and end point first. Arrows run along their true
+   direction, 50 to 80px long.
+4. For a particle or single-body problem, all force arrows originate at the
+   body's center of mass and point outward. For a rigid body, each force is
+   drawn at its actual point of application: reactions at their supports,
+   applied loads at their load points, weight at the center of mass. No arrow
+   may cross the body outline or any surface line.
+5. Labels go at the arrow tip, offset 12px perpendicular, on the side away from
+   the body. Never place a label on a surface line, on the body, or on another
+   arrow.
+6. Label the body outside its outline, not inside it.
+7. Angle and dimension labels go outside their arc or dimension line, and must
+   not touch any other label. When two labels would collide, move the less
+   important one farther out.
+8. A support's point label (A, B, C) and any force label at that support must
+   not occupy the same region. Place the point label below or inside the
+   support symbol, and place force labels at their arrow tips, away from the
+   support.
+9. Draw all text last so it paints on top.
+
+CONTENT
+Only draw arrows for forces acting on the body. Constants such as g belong in
+the givens text block, never as a vector.
+Never draw an arrow for a force whose magnitude is zero. State it in the
+givens block as text instead.
+If a force has a numeric value in the solution, show the computed number with
+units. Never mix a symbol and a unit in the same expression (writing
+"f_k = 0.3 N" when 0.3 is mu is wrong).
+
+TEXT
+Arial sans-serif, 13px force labels, 11px secondary notes.
+Every <text> gets paint-order="stroke" stroke="white" stroke-width="4"
+stroke-linejoin="round" as a readability fallback.
+text-anchor and dominant-baseline="middle" for precise placement."""
 
 
 
@@ -481,7 +520,8 @@ OUTPUT strict JSON:
 {
   "route": "PROBLEM" | "CONCEPT" | "CREATE" | "DRAW" | "SMALLTALK" | "OUT_OF_SCOPE",
   "rationale": "one short sentence",
-  "confidence": 0.0 to 1.0
+  "confidence": 0.0 to 1.0,
+  "problem_scope": "self_contained" | "referential"
 }
 
 ROUTE DEFINITIONS:
@@ -499,6 +539,16 @@ RULES:
 - If it is a follow-up to a problem already being solved, choose PROBLEM.
 - When unsure between CONCEPT and SMALLTALK, choose CONCEPT.
 - If the message explicitly asks to draw/sketch/show a diagram or FBD, choose DRAW.
+
+PROBLEM_SCOPE (always set this field, regardless of route, but it only matters for DRAW):
+- "self_contained": the message states everything needed to draw or solve the setup on its own — its own body and its own numbers — with NO dependency on anything said earlier. A message that only TWEAKS a value from a previous problem is NOT self-contained: it still depends on the prior turn for the rest of the setup.
+- "referential": the message depends on the prior conversation to know what to draw — it names no complete setup of its own, or it modifies a previously stated setup rather than restating one.
+
+PROBLEM_SCOPE EXAMPLES:
+- "A 25 kg crate slides down a 20 degree incline, mu_k = 0.3. Draw the FBD." -> self_contained (states its own body and every number needed).
+- "same thing but with a 10 kg block instead" -> referential (depends on the previous turn for the incline angle, friction, etc.; only the mass changes).
+- "draw that again bigger" -> referential (no setup at all here, purely a reference to what came before).
+- "also, a 2 kg ball hangs from a 1.5 m string at 30 degrees, what's the tension? by the way what was the answer to the last one" -> self_contained (a full new problem is stated in this message, even though old context is also mentioned).
 
 Return ONLY the JSON object. No prose."""
 
@@ -711,6 +761,11 @@ class OrchestratorAgent:
         response = self.client.messages.create(
             model=OPUS_MODEL,
             max_tokens=16000,
+            # No temperature: claude-opus-5 rejects the parameter outright
+            # ("`temperature` is deprecated for this model", HTTP 400), the
+            # same reason it was dropped from the Sonnet calls in 66c8e7c.
+            # Layout determinism comes from the explicit LAYOUT PROCESS in
+            # VISUALIZER_PROMPT instead.
             system=VISUALIZER_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
@@ -727,7 +782,17 @@ class OrchestratorAgent:
             snippet = text[:200].replace("\n", "\\n")
             logger.warning("visualizer response contained no <svg> element. First 200 chars: %r", snippet)
             return ""
-        return match.group(0)
+        svg = match.group(0)
+
+        # Deterministic backstop: Opus plans label placement from a text-only
+        # spec and cannot self-check bounding boxes, so nudge any colliding
+        # labels apart before this ever reaches a student. Never let this
+        # pass break a diagram it was only supposed to improve.
+        try:
+            svg = fix_label_collisions(svg)
+        except Exception:
+            logger.warning("fix_label_collisions raised; returning unfixed SVG", exc_info=True)
+        return svg
     
     
     def schematic_layout(self, parsed_input: dict, solution: dict | None) -> dict:
@@ -742,33 +807,6 @@ class OrchestratorAgent:
             messages=[{"role": "user", "content": user_content}],
         )
         return _parse_json(extract_text(response))
-    
-    
-    def draw_only(self, message: str, conversation_history: list) -> str:
-        """Render a diagram for an explicit draw request WITHOUT solving —
-        we draw the setup with symbolic force labels so the student can still
-        work the numbers themselves. Reuses the visualizer + both renderers."""
-        parsed = self.input_parser(message, conversation_history)
-        visualization = self.visualizer(parsed, None)   # None = don't give away solved values
-        diagram_image = render_fbd(visualization)
-        if not diagram_image:
-            layout = self.schematic_layout(parsed, None)
-            diagram_image = render_schematic(layout)
-        return diagram_image
-    
-    def _draw_created_problem(self, problem: dict) -> str:
-        """Draw a single generated problem's setup (unsolved). Returns b64 or ''."""
-        # Reuse the parser on the problem statement so we get a parsed scenario
-        stmt = problem.get("statement", "")
-        if not stmt:
-            return ""
-        parsed = self.input_parser(stmt, [])
-        visualization = self.visualizer(parsed, None)
-        img = render_fbd(visualization)
-        if not img:
-            layout = self.schematic_layout(parsed, None)
-            img = render_schematic(layout)
-        return img
     
     
         
@@ -962,10 +1000,12 @@ class OrchestratorAgent:
                 "low_confidence": False,
             }
 
-        # ---------- DRAW: Input Parser -> Visualizer -> Schematic Layout
-        #            -> Validator[retry] -> Conversationalist ----------
+        # ---------- DRAW: Input Parser -> Visualizer (SVG)
+        #            -> Conversationalist ----------
         if route == "DRAW":
-            parsed_input = self.input_parser(message, conversation_history)
+            parsed_input = self.input_parser(
+                message, _draw_history(route_decision, conversation_history)
+            )
             _log("input_parser", parsed_input)
 
             diagram_svg = self.visualizer(parsed_input, None)
@@ -1282,7 +1322,9 @@ class OrchestratorAgent:
             # Single-diagram DRAW mirrors run(): Input Parser -> Visualizer (SVG)
             # -> Conversationalist. The visualizer draws SVG directly.
             yield {"type": "status", "text": "Sketching the setup…"}
-            parsed_input = self.input_parser(message + source_block, conversation_history)
+            parsed_input = self.input_parser(
+                message + source_block, _draw_history(route_decision, conversation_history)
+            )
             diagram_svg = self.visualizer(parsed_input, None)
 
             # Lightweight non-empty / well-formed SVG check (no FBD-structure
@@ -1523,6 +1565,37 @@ def _new_session_id() -> str:
 # current-conversation memory from growing the prompt without bound. Only the
 # most recent MAX_HISTORY_MESSAGES messages are ever included.
 MAX_HISTORY_MESSAGES = 20
+
+
+# --- DRAW history gating -------------------------------------------------
+# A draw request that carries its own problem statement must be parsed on its
+# own, with NO conversation history: input_parser prepends the whole
+# conversation, so a fresh "2 kg ball on a 1.5 m string" otherwise gets fused
+# with the block-on-an-incline from three turns ago and the wrong problem is
+# drawn. A referential request ("draw that one", "same thing but 10 kg") has
+# the opposite need — the history is the only place the referent (or the rest
+# of the setup being tweaked) lives.
+#
+# The Router already reads the message as an LLM call and classifies intent;
+# it carries the "problem_scope" field ("self_contained" | "referential") in
+# its JSON output. A regex used to make this call independently, but it had
+# no way to tell "a 10 kg block instead" (referential — depends on the
+# previous turn for the rest of the setup) from a genuinely new problem that
+# happens to share the same shape of words. The Router reads the conversation
+# and can tell the difference; a second regex pass over the message alone
+# can't.
+
+
+def _draw_history(route_decision: dict, conversation_history: list) -> list:
+    """The history a DRAW request should be parsed against: [] when the
+    Router marked the message self_contained, the real history otherwise —
+    including when problem_scope is missing or an unrecognized value, since
+    an unparseable/incomplete router response must never strip history.
+    """
+    scope = (route_decision or {}).get("problem_scope")
+    if scope == "self_contained":
+        return []
+    return conversation_history or []
 
 
 def _format_history(conversation_history: list,
