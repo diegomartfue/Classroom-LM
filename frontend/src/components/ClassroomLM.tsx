@@ -7,8 +7,14 @@ import Markdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import DOMPurify from 'dompurify';
+import { toast } from 'sonner';
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
+import { useIsMobile } from '@/hooks/use-mobile';
 import 'katex/dist/katex.min.css';
 import './ClassroomLM.css';
+
+// A diagram the student clicked to view full size (Feature: diagram zoom).
+type ZoomedDiagram = { kind: 'svg' | 'png'; content: string } | null;
 
 // ==================== Types ====================
 type MessageSource = 'rag' | 'sympy' | 'llm' | null;
@@ -125,6 +131,20 @@ type StoredDoc = {
   extraction_method: string;
 };
 
+// --- Sidebar collapsed-state persistence -----------------------------------
+// Unlike conversations/history (sessionStorage — per browser session), the
+// collapsed/expanded choice is a durable UI preference, so it survives
+// reloads and new sessions via localStorage.
+const SIDEBAR_COLLAPSED_KEY = 'classroomlm:sidebarCollapsed';
+
+function loadSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
 // ==================== Component ====================
 export default function ClassroomLM() {
   const [conversations, setConversations] = useState<Conversation[]>(loadConversations);
@@ -136,6 +156,51 @@ export default function ClassroomLM() {
   const [isUploading, setIsUploading] = useState(false);
   const [studentModel, setStudentModel] = useState<object>({});
   const [uploadError, setUploadError] = useState('');
+
+  // ---------------- Sidebar: collapse (desktop) / drawer (mobile) ----------
+  const isMobile = useIsMobile();
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(loadSidebarCollapsed);
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+  // The diagram (if any) currently open full-size in the zoom modal.
+  const [zoomedDiagram, setZoomedDiagram] = useState<ZoomedDiagram>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed ? '1' : '0');
+    } catch {
+      // storage full/unavailable — the in-memory state still works this session
+    }
+  }, [sidebarCollapsed]);
+
+  function toggleSidebar() {
+    if (isMobile) setMobileDrawerOpen(o => !o);
+    else setSidebarCollapsed(c => !c);
+  }
+
+  // Cmd/Ctrl+B toggles the sidebar globally, and Escape closes the mobile
+  // drawer — both work regardless of where focus currently is.
+  useEffect(() => {
+    function onKeyDown(e: globalThis.KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        toggleSidebar();
+      } else if (e.key === 'Escape' && isMobile && mobileDrawerOpen) {
+        setMobileDrawerOpen(false);
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMobile, mobileDrawerOpen]);
+
+  // A conversation switch always closes the mobile drawer (it never makes
+  // sense to keep it open once the pick has been made); harmless on desktop,
+  // where mobileDrawerOpen is never true.
+  function selectConversation(id: string) {
+    setActiveId(id);
+    setMobileDrawerOpen(false);
+  }
+
   async function refreshDocuments() {
     try {
       const res = await fetch(`${API_BASE}/documents`);
@@ -458,10 +523,27 @@ async function sendMessage(overrideText?: string) {
   }
 
   // ==================== Render ====================
+  const sidebarClassName = [
+    'clm-sidebar',
+    isMobile ? 'clm-sidebar--mobile' : '',
+    isMobile && mobileDrawerOpen ? 'clm-sidebar--drawer-open' : '',
+    !isMobile && sidebarCollapsed ? 'clm-sidebar--collapsed' : '',
+  ].filter(Boolean).join(' ');
+  const sidebarExpanded = isMobile ? mobileDrawerOpen : !sidebarCollapsed;
+
   return (
     <div className="clm-app">
+      {/* Mobile-only backdrop: tapping it closes the drawer, same as Escape. */}
+      {isMobile && mobileDrawerOpen && (
+        <div
+          className="clm-sidebar-backdrop"
+          onClick={() => setMobileDrawerOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
       {/* ---------------- Sidebar ---------------- */}
-      <aside className="clm-sidebar">
+      <aside id="clm-sidebar" className={sidebarClassName}>
         <div className="clm-sidebar-header">
           <div className="clm-brand">
             <div className="clm-brand-mark">C</div>
@@ -482,7 +564,7 @@ async function sendMessage(overrideText?: string) {
             <div
               key={c.id}
               className={`clm-convo-item ${c.id === activeId ? 'active' : ''}`}
-              onClick={() => setActiveId(c.id)}
+              onClick={() => selectConversation(c.id)}
             >
               <MessageIcon />
               <span className="clm-convo-title">{c.title}</span>
@@ -570,9 +652,21 @@ async function sendMessage(overrideText?: string) {
       {/* ---------------- Main ---------------- */}
       <main className="clm-main">
         <div className="clm-chat-header">
-          <div className="clm-chat-title">
-            {active?.title ?? 'New conversation'}
-            <span className="clm-subject-tag">Dynamics</span>
+          <div className="clm-header-left">
+            <button
+              className="clm-sidebar-toggle"
+              onClick={toggleSidebar}
+              aria-expanded={sidebarExpanded}
+              aria-controls="clm-sidebar"
+              aria-label={sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
+              title={`${sidebarExpanded ? 'Collapse' : 'Expand'} sidebar (Ctrl/⌘+B)`}
+            >
+              <SidebarToggleIcon />
+            </button>
+            <div className="clm-chat-title">
+              {active?.title ?? 'New conversation'}
+              <span className="clm-subject-tag">Dynamics</span>
+            </div>
           </div>
           <div className="clm-mode-pill">
             <span className="clm-mode-dot" />
@@ -592,6 +686,7 @@ async function sendMessage(overrideText?: string) {
                     key={m.id}
                     m={m}
                     isStreaming={isLoading && i === visible.length - 1 && m.role === 'ai'}
+                    onZoom={setZoomedDiagram}
                   />
                 ));
               })()}
@@ -637,6 +732,30 @@ async function sendMessage(overrideText?: string) {
           </div>
         </div>
       </main>
+
+      {/* ---------------- Diagram zoom modal ---------------- */}
+      <Dialog
+        open={zoomedDiagram !== null}
+        onOpenChange={open => { if (!open) setZoomedDiagram(null); }}
+      >
+        <DialogContent className="w-[92vw] max-w-4xl p-4 sm:p-6">
+          <DialogTitle>Diagram</DialogTitle>
+          <div className="flex max-h-[80vh] items-center justify-center overflow-auto">
+            {zoomedDiagram?.kind === 'svg' ? (
+              <div
+                className="w-full [&_svg]:h-auto [&_svg]:w-full"
+                dangerouslySetInnerHTML={{ __html: zoomedDiagram.content }}
+              />
+            ) : zoomedDiagram?.kind === 'png' ? (
+              <img
+                src={`data:image/png;base64,${zoomedDiagram.content}`}
+                alt="Free Body Diagram"
+                className="h-auto max-w-full"
+              />
+            ) : null}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -693,7 +812,13 @@ const MarkdownMessage = memo(function MarkdownMessage({ content }: { content: st
   );
 });
 
-function MessageView({ m, isStreaming }: { m: Message; isStreaming?: boolean }) {
+function MessageView({
+  m, isStreaming, onZoom,
+}: {
+  m: Message;
+  isStreaming?: boolean;
+  onZoom: (diagram: ZoomedDiagram) => void;
+}) {
   // Render the full Markdown/KaTeX pipeline only for COMPLETED assistant
   // messages. While streaming (and for user messages) show cheap plain text so
   // math isn't re-parsed on every token and partial LaTeX doesn't flicker.
@@ -704,6 +829,39 @@ function MessageView({ m, isStreaming }: { m: Message; isStreaming?: boolean }) 
     if (!m.diagramSvg) return '';
     return DOMPurify.sanitize(m.diagramSvg, { USE_PROFILES: { svg: true, svgFilters: true } }).trim();
   }, [m.diagramSvg]);
+
+  const [copied, setCopied] = useState(false);
+  // Copies the raw Markdown/LaTeX SOURCE (m.content, exactly as streamed from
+  // the backend, before react-markdown/rehype-katex ever touch it) — never
+  // the rendered DOM. Selecting rendered KaTeX output and copying it doubles
+  // text (KaTeX renders a visible HTML tree AND a hidden MathML tree for
+  // accessibility, and a plain DOM copy grabs both), e.g. "100 N100 N".
+  // Copying the source string directly sidesteps that entirely.
+  async function copyMessage() {
+    try {
+      await navigator.clipboard.writeText(m.content);
+    } catch {
+      // Clipboard API unavailable (older browser, non-secure context) — fall
+      // back to the classic hidden-textarea + execCommand trick.
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = m.content;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch {
+        toast.error('Could not copy message.');
+        return;
+      }
+    }
+    setCopied(true);
+    toast.success('Copied to clipboard');
+    setTimeout(() => setCopied(false), 1500);
+  }
+
   return (
     <div className={`clm-message ${m.role}`}>
       <div className="clm-msg-avatar">{m.role === 'user' ? 'E' : 'C'}</div>
@@ -715,6 +873,17 @@ function MessageView({ m, isStreaming }: { m: Message; isStreaming?: boolean }) 
               {m.source === 'rag' ? 'RAG' : m.source === 'sympy' ? 'SymPy' : 'LLM'}
             </span>
           )}
+          {m.role === 'ai' && !isStreaming && m.content && (
+            <button
+              className="clm-copy-btn"
+              onClick={copyMessage}
+              aria-label={copied ? 'Copied' : 'Copy message source'}
+              title="Copy raw Markdown/LaTeX source"
+            >
+              {copied ? <CheckIcon /> : <CopyIcon />}
+              {copied ? 'Copied' : 'Copy'}
+            </button>
+          )}
         </div>
         <div className="clm-msg-content">
           {renderAsMarkdown
@@ -723,7 +892,17 @@ function MessageView({ m, isStreaming }: { m: Message; isStreaming?: boolean }) 
         </div>
         {sanitizedDiagramSvg ? (
           <div
-            className="clm-msg-diagram"
+            className="clm-msg-diagram clm-diagram-zoomable"
+            role="button"
+            tabIndex={0}
+            aria-label="Open diagram full size"
+            onClick={() => onZoom({ kind: 'svg', content: sanitizedDiagramSvg })}
+            onKeyDown={e => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onZoom({ kind: 'svg', content: sanitizedDiagramSvg });
+              }
+            }}
             style={{
               marginTop: '16px',
               maxWidth: '100%',
@@ -739,6 +918,17 @@ function MessageView({ m, isStreaming }: { m: Message; isStreaming?: boolean }) 
           <img
             src={`data:image/png;base64,${m.diagram}`}
             alt="Free Body Diagram"
+            className="clm-diagram-zoomable"
+            role="button"
+            tabIndex={0}
+            aria-label="Open diagram full size"
+            onClick={() => onZoom({ kind: 'png', content: m.diagram! })}
+            onKeyDown={e => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onZoom({ kind: 'png', content: m.diagram! });
+              }
+            }}
             style={{
               marginTop: '16px',
               maxWidth: '100%',
@@ -792,6 +982,23 @@ const SendIcon = () => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
     <line x1="22" y1="2" x2="11" y2="13" />
     <polygon points="22 2 15 22 11 13 2 9 22 2" />
+  </svg>
+);
+const SidebarToggleIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <line x1="9" y1="4" x2="9" y2="20" />
+  </svg>
+);
+const CopyIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+    <rect x="9" y="9" width="13" height="13" rx="2" />
+    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+  </svg>
+);
+const CheckIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="20 6 9 17 4 12" />
   </svg>
 );
 
