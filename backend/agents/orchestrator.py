@@ -411,7 +411,7 @@ LAYOUT PROCESS (plan all coordinates before emitting any SVG)
    support.
 9. Draw all text last so it paints on top.
 
-CONTENT
+CONTENT — FORCE / FREE-BODY-DIAGRAM PROBLEMS
 Only draw arrows for forces acting on the body. Constants such as g belong in
 the givens text block, never as a vector.
 Never draw an arrow for a force whose magnitude is zero. State it in the
@@ -419,6 +419,34 @@ givens block as text instead.
 If a force has a numeric value in the solution, show the computed number with
 units. Never mix a symbol and a unit in the same expression (writing
 "f_k = 0.3 N" when 0.3 is mu is wrong).
+These force rules do not apply to a kinematics problem (below) — do not draw
+force arrows on a body that has no forces given.
+
+CONTENT — KINEMATICS PROBLEMS (no forces given, or the problem only asks for
+positions/velocities/accelerations)
+Draw the body (or bodies) in their described configuration: point, block,
+disk, rod, or linkage, at the position/angle stated in the problem.
+Show position with a labeled coordinate or a dimension line from a fixed
+reference (pivot, wall, ground) — not a force arrow.
+Show linear velocity/acceleration as arrows from the relevant point (e.g. v_B,
+a_B from point B), and angular velocity/acceleration as a curved arrow around
+the rotation axis, labeled omega/alpha with correct rotational sense (CW/CCW
+matching the problem).
+Draw constraint geometry explicitly: a string over a pulley, a rod pinned at
+a fixed point, a wheel rolling without slipping on a surface (mark the
+contact point) — whatever links the bodies' motions together.
+Include a coordinate system or angle reference so vector directions are
+unambiguous.
+
+UNKNOWNS — applies to both force and kinematics diagrams
+Never compute or derive a quantity yourself. A value may appear as a number
+only if it is already present in the parsed problem's givens or in the
+solver solution you were given (solution may be null — treat that as "no
+solved values are available yet"). For every other quantity the problem asks
+to find, write its symbol with a literal question mark instead of a number,
+e.g. "omega = ?", "v_B = ?", "N = ?" — never guess, estimate, or silently
+solve for it, even if the physics is simple enough that you could. Showing a
+number you were not given defeats the point of the exercise for the student.
 
 TEXT
 Arial sans-serif, 13px force labels, 11px secondary notes.
@@ -703,10 +731,42 @@ class OrchestratorAgent:
         response = self.client.messages.create(
             model=SONNET_MODEL,
             max_tokens=1400,
+            # claude-sonnet-5 also runs adaptive thinking on by default when
+            # `thinking` is omitted (see response_utils.py's module docstring
+            # and the visualizer() call above) — the observed truncation
+            # ("Unterminated string" at char 491, well under what 1400 output
+            # tokens of pure JSON would allow) is consistent with most of the
+            # budget going to an invisible thinking block before the JSON
+            # even starts. The output schema itself (concept_mastery floats,
+            # a short misconception list, a few strings) comfortably fits
+            # well under 1400 tokens on its own — the fix is capping thinking
+            # spend, not raising max_tokens further. "low" effort: this is
+            # incremental classification/tracking against a fixed rubric, not
+            # open-ended reasoning.
+            thinking={"type": "adaptive"},
+            output_config={"effort": "low"},
             system=STUDENT_MODELER_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
         return _parse_json(extract_text(response))
+
+    def _student_modeler_safe(self, parsed_input: dict, student_model: dict,
+                               conversation_history: list, *, fallback: dict) -> dict:
+        """student_modeler(), but a parse failure (e.g. JSON truncated mid
+        string) falls back to ``fallback`` instead of propagating the
+        {"parse_error": ...} dict. That dict is not a valid student model —
+        letting it flow into updated_student_model would silently wipe every
+        mastered/struggling concept the student has actually earned, on
+        nothing more than one bad Sonnet response. Never let a transient
+        parse failure erase real state."""
+        result = self.student_modeler(parsed_input, student_model, conversation_history)
+        if "parse_error" in result:
+            logger.warning(
+                "student_modeler returned parse_error; keeping previous value instead "
+                "of overwriting it with the failed response"
+            )
+            return fallback
+        return result
 
     def pedagogical_planner(self, parsed_input: dict, student_model: dict, conversation_history: list, raw_message: str = "") -> dict:
         user_content = (
@@ -766,14 +826,39 @@ class OrchestratorAgent:
             # same reason it was dropped from the Sonnet calls in 66c8e7c.
             # Layout determinism comes from the explicit LAYOUT PROCESS in
             # VISUALIZER_PROMPT instead.
+            #
+            # thinking/effort: claude-opus-5 runs ADAPTIVE THINKING ON BY
+            # DEFAULT when `thinking` is omitted (unlike Opus 4.7/4.8), and
+            # those thinking tokens count against max_tokens. A valid SVG is
+            # ~2000 tokens; the rest of the 16000 budget was silently going to
+            # an invisible (display defaults to "omitted") thinking block,
+            # which is exactly why this call was flaky at stop_reason ==
+            # "max_tokens". Drawing a diagram from an already-parsed,
+            # already-solved problem by following the prompt's explicit
+            # LAYOUT PROCESS is mechanical, not deep reasoning, so "medium"
+            # effort keeps thinking on (avoiding the tag-leakage/tool-call-in-
+            # text failure modes of disabling it outright) while capping how
+            # much of the budget it can spend before the SVG itself starts.
+            thinking={"type": "adaptive"},
+            output_config={"effort": "medium"},
             system=VISUALIZER_PROMPT,
             messages=[{"role": "user", "content": user_content}],
+        )
+        # getattr(response, "usage", None) first, not just getattr(response.usage,
+        # ...): a response missing .usage entirely (some test doubles) would
+        # otherwise raise here on the *outer* attribute before the inner
+        # getattr's default ever applies.
+        output_tokens = getattr(getattr(response, "usage", None), "output_tokens", "?")
+        block_types = [getattr(b, "type", "?") for b in response.content]
+        logger.info(
+            "visualizer response: stop_reason=%s output_tokens=%s block_types=%s",
+            response.stop_reason, output_tokens, block_types,
         )
         if response.stop_reason == "max_tokens":
             logger.warning(
                 "visualizer response truncated (stop_reason=max_tokens, "
                 "output_tokens=%s); discarding output",
-                getattr(response.usage, "output_tokens", "?"),
+                output_tokens,
             )
             return ""
         text = extract_text(response)
@@ -1008,12 +1093,24 @@ class OrchestratorAgent:
             )
             _log("input_parser", parsed_input)
 
-            diagram_svg = self.visualizer(parsed_input, None)
-            _log("visualizer", diagram_svg)
-
-            # The visualizer now returns SVG directly, so validation is a light
-            # non-empty / well-formed check rather than FBD-structure checking.
-            svg_ok = _svg_is_valid(diagram_svg)
+            # A failed parse must not be handed to the visualizer — it can
+            # only guess at a diagram from a broken {"parse_error": ...,
+            # "raw_response": ...} dict, which is worse than no diagram at
+            # all. Skip drawing; svg_ok stays False, which is the same
+            # signal already used for a genuinely failed visualizer call.
+            if "parse_error" in parsed_input:
+                logger.warning(
+                    "input_parser failed to parse the DRAW request; skipping visualizer"
+                )
+                diagram_svg = ""
+                svg_ok = False
+            else:
+                diagram_svg = self.visualizer(parsed_input, None)
+                _log("visualizer", diagram_svg)
+                # The visualizer now returns SVG directly, so validation is a
+                # light non-empty / well-formed check rather than
+                # FBD-structure checking.
+                svg_ok = _svg_is_valid(diagram_svg)
             validation = {
                 "task": "VALIDATE_SVG",
                 "non_empty": bool(diagram_svg.strip()),
@@ -1057,8 +1154,8 @@ class OrchestratorAgent:
             create_context = {"route": "CREATE", "request": message}
 
             # 1. Modeler: build/refresh the overall student model.
-            updated_student_model = self.student_modeler(
-                create_context, student_model, conversation_history
+            updated_student_model = self._student_modeler_safe(
+                create_context, student_model, conversation_history, fallback=student_model
             )
             _log("student_modeler", updated_student_model)
 
@@ -1083,8 +1180,8 @@ class OrchestratorAgent:
                 ),
                 "plan": plan,
             }
-            misconceptions = self.student_modeler(
-                identifier_context, updated_student_model, conversation_history
+            misconceptions = self._student_modeler_safe(
+                identifier_context, updated_student_model, conversation_history, fallback={}
             )
             _log("identifier", misconceptions)
 
@@ -1157,7 +1254,9 @@ class OrchestratorAgent:
         parsed_input = self.input_parser(message, conversation_history)
         _log("input_parser", parsed_input)
 
-        updated_student_model = self.student_modeler(parsed_input, student_model, conversation_history)
+        updated_student_model = self._student_modeler_safe(
+            parsed_input, student_model, conversation_history, fallback=student_model
+        )
         _log("student_modeler", updated_student_model)
 
         plan = self.pedagogical_planner(parsed_input, updated_student_model, conversation_history, raw_message=message)
@@ -1308,6 +1407,12 @@ class OrchestratorAgent:
                     if not stmt:
                         continue
                     parsed_p = self.input_parser(stmt, [])
+                    if "parse_error" in parsed_p:
+                        logger.warning(
+                            "input_parser failed to parse a created problem for DRAW; "
+                            "skipping visualizer for it"
+                        )
+                        continue
                     svg_p = self.visualizer(parsed_p, None)
                     if _svg_is_valid(svg_p):
                         svgs.append(svg_p)
@@ -1325,7 +1430,17 @@ class OrchestratorAgent:
             parsed_input = self.input_parser(
                 message + source_block, _draw_history(route_decision, conversation_history)
             )
-            diagram_svg = self.visualizer(parsed_input, None)
+
+            # A failed parse must not be handed to the visualizer — see the
+            # matching guard in run(). svg_ok stays False (skips drawing)
+            # exactly as it would for a genuinely failed visualizer call.
+            if "parse_error" in parsed_input:
+                logger.warning(
+                    "input_parser failed to parse the DRAW request; skipping visualizer"
+                )
+                diagram_svg = ""
+            else:
+                diagram_svg = self.visualizer(parsed_input, None)
 
             # Lightweight non-empty / well-formed SVG check (no FBD-structure
             # validation, since the output is SVG rather than structured JSON).
@@ -1366,8 +1481,8 @@ class OrchestratorAgent:
             create_context = {"route": "CREATE", "request": message}
 
             yield {"type": "status", "text": "Sizing up where you're at…"}
-            updated_student_model = self.student_modeler(
-                create_context, student_model, conversation_history
+            updated_student_model = self._student_modeler_safe(
+                create_context, student_model, conversation_history, fallback=student_model
             )
             plan = self.pedagogical_planner(
                 create_context, updated_student_model, conversation_history, raw_message=message
@@ -1386,8 +1501,8 @@ class OrchestratorAgent:
                 ),
                 "plan": plan,
             }
-            misconceptions = self.student_modeler(
-                identifier_context, updated_student_model, conversation_history
+            misconceptions = self._student_modeler_safe(
+                identifier_context, updated_student_model, conversation_history, fallback={}
             )
 
             yield {"type": "status", "text": "Writing practice problems…"}
@@ -1448,7 +1563,9 @@ class OrchestratorAgent:
         # PROBLEM path
         yield {"type": "status", "text": "Reading the problem\u2026"}
         parsed_input = self.input_parser(message + source_block, conversation_history)
-        updated_student_model = self.student_modeler(parsed_input, student_model, conversation_history)
+        updated_student_model = self._student_modeler_safe(
+            parsed_input, student_model, conversation_history, fallback=student_model
+        )
         plan = self.pedagogical_planner(parsed_input, updated_student_model,
                                         conversation_history,
                                         raw_message=message + source_block)
@@ -1676,39 +1793,81 @@ def _diagram_status(svg_ok: bool) -> dict:
     return {"diagram_rendered": bool(svg_ok)}
 
 
+def _extract_json_object(text: str) -> str | None:
+    """Find the first complete, brace-balanced {...} object in ``text``,
+    honoring string literals so a '{' or '}' inside a JSON string value
+    doesn't miscount the nesting depth. Returns the substring spanning the
+    outermost object, or None if no balanced object is found (e.g. the JSON
+    was truncated before its closing brace ever arrived)."""
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None  # never balanced — truncated mid-object
+
+
 def _parse_json(text: str) -> dict:
     """
     Extract and parse a JSON object from the model's response.
 
-    Strips markdown code fences if present. This is the JSON failure boundary:
-    on malformed/empty/non-JSON output it returns a dict carrying a
-    ``parse_error`` key (and the raw response for debugging) rather than
-    raising, and logs a warning so the failure is never silent. Downstream
-    consumers must treat a ``parse_error`` result as invalid agent output.
+    Strips a leading markdown code fence if present, then extracts the FIRST
+    complete, brace-balanced {...} object and parses only that — anything
+    before it (leading prose) or after it (a trailing fence, trailing prose,
+    a second code block) is ignored rather than tripping json.loads on
+    "Extra data". This is the JSON failure boundary: on malformed/empty/
+    non-JSON/truncated output it returns a dict carrying a ``parse_error``
+    key (and the raw response for debugging) rather than raising, and logs a
+    warning so the failure is never silent. Downstream consumers must treat
+    a ``parse_error`` result as invalid agent output.
 
     Note: this is a DIFFERENT failure class from the ThinkingBlock/text
     extraction issue, which is handled upstream by response_utils.extract_text.
     An empty ``text`` here (e.g. a response with no text block) still yields a
     logged parse_error rather than a crash.
     """
-    stripped = text.strip()
-    # Remove ```json ... ``` or ``` ... ``` fences
+    stripped = (text or "").strip()
+    # A leading ```json / ``` fence marker is dropped outright — the matching
+    # closing fence (and anything after it) doesn't need finding here, since
+    # the balanced-object scan below naturally stops at the JSON object's own
+    # closing brace and ignores everything past it.
     if stripped.startswith("```"):
-        lines = stripped.splitlines()
-        # Drop first and last fence lines
-        inner = lines[1:] if lines[0].startswith("```") else lines
-        if inner and inner[-1].strip() == "```":
-            inner = inner[:-1]
-        stripped = "\n".join(inner).strip()
-    try:
-        return json.loads(stripped)
-    except json.JSONDecodeError as exc:
-        # Never silent: log a truncated snippet (not the full body) so malformed
-        # agent output is diagnosable without dumping large/sensitive content.
-        snippet = (text or "")[:200].replace("\n", "\\n")
-        logger.warning("Agent returned unparseable JSON (%s). First 200 chars: %r",
-                       exc, snippet)
-        return {"parse_error": str(exc), "raw_response": text}
+        first_newline = stripped.find("\n")
+        stripped = stripped[first_newline + 1:] if first_newline != -1 else ""
+
+    candidate = _extract_json_object(stripped)
+    if candidate is not None:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass  # fall through to the shared parse_error path below
+
+    # Never silent: log a truncated snippet (not the full body) so malformed
+    # agent output is diagnosable without dumping large/sensitive content.
+    snippet = (text or "")[:200].replace("\n", "\\n")
+    reason = "no balanced JSON object found" if candidate is None else "invalid JSON"
+    logger.warning("Agent returned unparseable JSON (%s). First 200 chars: %r",
+                   reason, snippet)
+    return {"parse_error": reason, "raw_response": text}
     
     
     
