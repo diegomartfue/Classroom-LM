@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from .memory import SessionMemory
 from .svg_layout import fix_label_collisions
 from dotenv import load_dotenv
-from model_config import SONNET_MODEL, HAIKU_MODEL, OPUS_MODEL
+from model_config import SONNET_MODEL, HAIKU_MODEL, OPUS_MODEL, VISUALIZER_MODEL
 from response_utils import extract_text
 
 load_dotenv()
@@ -819,26 +819,27 @@ class OrchestratorAgent:
             f"Solver solution:\n{json.dumps(solution, indent=2)}"
         )
         response = self.client.messages.create(
-            model=OPUS_MODEL,
+            model=VISUALIZER_MODEL,
             max_tokens=16000,
-            # No temperature: claude-opus-5 rejects the parameter outright
+            # No temperature: claude-opus-5(.5) rejects the parameter outright
             # ("`temperature` is deprecated for this model", HTTP 400), the
             # same reason it was dropped from the Sonnet calls in 66c8e7c.
             # Layout determinism comes from the explicit LAYOUT PROCESS in
             # VISUALIZER_PROMPT instead.
             #
-            # thinking/effort: claude-opus-5 runs ADAPTIVE THINKING ON BY
-            # DEFAULT when `thinking` is omitted (unlike Opus 4.7/4.8), and
-            # those thinking tokens count against max_tokens. A valid SVG is
-            # ~2000 tokens; the rest of the 16000 budget was silently going to
-            # an invisible (display defaults to "omitted") thinking block,
-            # which is exactly why this call was flaky at stop_reason ==
-            # "max_tokens". Drawing a diagram from an already-parsed,
-            # already-solved problem by following the prompt's explicit
-            # LAYOUT PROCESS is mechanical, not deep reasoning, so "medium"
-            # effort keeps thinking on (avoiding the tag-leakage/tool-call-in-
-            # text failure modes of disabling it outright) while capping how
-            # much of the budget it can spend before the SVG itself starts.
+            # thinking/effort: claude-opus-5-5 runs adaptive thinking
+            # ALWAYS ON — unlike Opus 5, `{"type": "disabled"}` is a 400 at
+            # every effort level on 5.5, so "adaptive" here isn't a choice
+            # among several, it's the only accepted value (omitting the
+            # field is equivalent). Thinking tokens still count against
+            # max_tokens on 5.5 exactly as they did on Opus 5 — that's what
+            # made this call flaky at stop_reason == "max_tokens" in the
+            # first place, and the fix is the same: control thinking depth
+            # with effort, not by trying to turn it off. "medium" already
+            # matches 5.5's own default (Opus 5's default was "high") and is
+            # Anthropic's documented starting point for 5.5 — its own
+            # testing has medium on 5.5 matching or beating Opus 5's high on
+            # comparable generation tasks, using fewer tokens per turn.
             thinking={"type": "adaptive"},
             output_config={"effort": "medium"},
             system=VISUALIZER_PROMPT,
