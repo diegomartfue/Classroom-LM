@@ -35,7 +35,13 @@
   --shadow-soft: 0 1px 3px rgba(15, 15, 15, 0.04), 0 1px 2px rgba(15, 15, 15, 0.03);
 
   display: grid;
-  grid-template-columns: 272px 1fr;
+  /* "auto" (rather than a fixed 272px) lets the sidebar's own width drive the
+     track size, which is what makes the collapse/expand transition below
+     animate smoothly instead of jumping — the aside's width transitions and
+     the grid track follows it every frame. On mobile the sidebar is taken
+     out of flow entirely (position: fixed), so this track collapses to 0
+     and the chat naturally gets the full width. */
+  grid-template-columns: auto 1fr;
   height: 100vh;
   width: 100vw;
   font-family: 'Geist', -apple-system, sans-serif;
@@ -72,6 +78,67 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  width: 272px;
+  flex-shrink: 0;
+  transition: width 220ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+/* Desktop collapsed: width animates to 0, the grid track (auto) follows it,
+   and the chat takes the freed space smoothly — no jump. Content inside is
+   hidden via width:0 + overflow:hidden on the parent (no opacity flash). */
+.clm-sidebar--collapsed {
+  width: 0;
+  border-right-color: transparent;
+}
+
+/* Mobile: the sidebar leaves normal flow (position: fixed) and becomes a
+   slide-in overlay drawer instead of a width-collapsing column. */
+.clm-sidebar--mobile {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 60;
+  width: 280px;
+  max-width: 84vw;
+  transform: translateX(-100%);
+  transition: transform 260ms cubic-bezier(0.2, 0.9, 0.3, 1);
+  box-shadow: 0 0 40px rgba(0, 0, 0, 0.35);
+}
+.clm-sidebar--mobile.clm-sidebar--drawer-open {
+  transform: translateX(0);
+}
+
+.clm-sidebar-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 55;
+  animation: clmFadeIn 180ms ease both;
+}
+@keyframes clmFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ---- Sidebar toggle button (lives in the main chat header) ---- */
+.clm-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.clm-sidebar-toggle {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  transition: background 120ms ease, color 120ms ease;
+}
+.clm-sidebar-toggle:hover { background: var(--bg-elevated); color: var(--text-primary); }
+.clm-sidebar-toggle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(255, 130, 0, 0.25);
 }
 
 .clm-sidebar-header {
@@ -375,6 +442,11 @@
   border: none;
 }
 
+.clm-msg-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
 .clm-citations {
   margin-top: 12px;
   padding-top: 10px;
@@ -666,4 +738,38 @@
   font-size: 12px;
   opacity: 0.65;
   padding: 0 6px;
+}
+
+/* ========== Diagram zoom ========== */
+.clm-diagram-zoomable {
+  cursor: zoom-in;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.clm-diagram-zoomable:hover {
+  border-color: var(--border-orange);
+  box-shadow: 0 0 0 3px rgba(255, 130, 0, 0.08);
+}
+.clm-diagram-zoomable:focus-visible {
+  outline: none;
+  border-color: var(--border-orange);
+  box-shadow: 0 0 0 3px rgba(255, 130, 0, 0.18);
+}
+
+/* ========== Copy message button ========== */
+.clm-copy-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  transition: background 100ms ease, color 100ms ease;
+}
+.clm-copy-btn:hover { background: var(--bg-elevated); color: var(--text-secondary); }
+.clm-copy-btn:focus-visible {
+  outline: none;
+  color: var(--text-secondary);
+  box-shadow: 0 0 0 3px rgba(255, 130, 0, 0.18);
 }

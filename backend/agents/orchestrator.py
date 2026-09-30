@@ -13,6 +13,7 @@ Pipeline:
 import json
 import logging
 import os
+import re
 import anthropic
 import matplotlib
 matplotlib.use('Agg')
@@ -22,10 +23,10 @@ import io
 import base64
 import uuid
 from datetime import datetime, timezone
-from .fbd_renderer import render_fbd, render_schematic, stack_images_vertical
 from .memory import SessionMemory
+from .svg_layout import fix_label_collisions
 from dotenv import load_dotenv
-from model_config import SONNET_MODEL, HAIKU_MODEL, OPUS_MODEL
+from model_config import SONNET_MODEL, HAIKU_MODEL, OPUS_MODEL, VISUALIZER_MODEL
 from response_utils import extract_text
 
 load_dotenv()
@@ -382,7 +383,76 @@ RULES:
 
 Return ONLY the JSON."""
 
-VISUALIZER_PROMPT = """You are an expert technical illustrator. Given a physics problem and its solution, draw an accurate, clean, readable SVG diagram. Include: the body/mechanism exactly as described, all forces/reactions with correct labels and directions, support symbols if applicable, and a coordinate system indicator. Output ONLY valid SVG code starting with <svg and ending with </svg>. Make it visually clean: no overlapping text, appropriate font sizes (10-14px), adequate spacing, viewBox sized appropriately, white background. Use standard physics diagram conventions."""
+VISUALIZER_PROMPT = """You are an expert technical illustrator. Given a physics problem and its solution, draw an accurate, clean, readable SVG diagram. Include: the body/mechanism exactly as described, all forces/reactions with correct labels and directions, support symbols if applicable, and a coordinate system indicator. Output ONLY valid SVG code starting with <svg and ending with </svg>. Use standard physics diagram conventions and a white background.
+
+Keep the SVG compact: no comments, no unnecessary groups or decimals beyond 1 place, reuse arrowhead markers via <defs>.
+
+LAYOUT PROCESS (plan all coordinates before emitting any SVG)
+1. viewBox 600x400 unless geometry demands more. 30px margin on all sides for
+   every element and label.
+2. Body near center, roughly 40% of width, open space around it for arrows.
+3. Decide every arrow's start and end point first. Arrows run along their true
+   direction, 50 to 80px long.
+4. For a particle or single-body problem, all force arrows originate at the
+   body's center of mass and point outward. For a rigid body, each force is
+   drawn at its actual point of application: reactions at their supports,
+   applied loads at their load points, weight at the center of mass. No arrow
+   may cross the body outline or any surface line.
+5. Labels go at the arrow tip, offset 12px perpendicular, on the side away from
+   the body. Never place a label on a surface line, on the body, or on another
+   arrow.
+6. Label the body outside its outline, not inside it.
+7. Angle and dimension labels go outside their arc or dimension line, and must
+   not touch any other label. When two labels would collide, move the less
+   important one farther out.
+8. A support's point label (A, B, C) and any force label at that support must
+   not occupy the same region. Place the point label below or inside the
+   support symbol, and place force labels at their arrow tips, away from the
+   support.
+9. Draw all text last so it paints on top.
+
+CONTENT — FORCE / FREE-BODY-DIAGRAM PROBLEMS
+Only draw arrows for forces acting on the body. Constants such as g belong in
+the givens text block, never as a vector.
+Never draw an arrow for a force whose magnitude is zero. State it in the
+givens block as text instead.
+If a force has a numeric value in the solution, show the computed number with
+units. Never mix a symbol and a unit in the same expression (writing
+"f_k = 0.3 N" when 0.3 is mu is wrong).
+These force rules do not apply to a kinematics problem (below) — do not draw
+force arrows on a body that has no forces given.
+
+CONTENT — KINEMATICS PROBLEMS (no forces given, or the problem only asks for
+positions/velocities/accelerations)
+Draw the body (or bodies) in their described configuration: point, block,
+disk, rod, or linkage, at the position/angle stated in the problem.
+Show position with a labeled coordinate or a dimension line from a fixed
+reference (pivot, wall, ground) — not a force arrow.
+Show linear velocity/acceleration as arrows from the relevant point (e.g. v_B,
+a_B from point B), and angular velocity/acceleration as a curved arrow around
+the rotation axis, labeled omega/alpha with correct rotational sense (CW/CCW
+matching the problem).
+Draw constraint geometry explicitly: a string over a pulley, a rod pinned at
+a fixed point, a wheel rolling without slipping on a surface (mark the
+contact point) — whatever links the bodies' motions together.
+Include a coordinate system or angle reference so vector directions are
+unambiguous.
+
+UNKNOWNS — applies to both force and kinematics diagrams
+Never compute or derive a quantity yourself. A value may appear as a number
+only if it is already present in the parsed problem's givens or in the
+solver solution you were given (solution may be null — treat that as "no
+solved values are available yet"). For every other quantity the problem asks
+to find, write its symbol with a literal question mark instead of a number,
+e.g. "omega = ?", "v_B = ?", "N = ?" — never guess, estimate, or silently
+solve for it, even if the physics is simple enough that you could. Showing a
+number you were not given defeats the point of the exercise for the student.
+
+TEXT
+Arial sans-serif, 13px force labels, 11px secondary notes.
+Every <text> gets paint-order="stroke" stroke="white" stroke-width="4"
+stroke-linejoin="round" as a readability fallback.
+text-anchor and dominant-baseline="middle" for precise placement."""
 
 
 
@@ -444,6 +514,7 @@ HARD RULES:
 - WAIT: acknowledge and give space. Very short.
 - Never invent physics content. If the Planner didn't provide it, don't add it.
 - If the student asks something outside 2D dynamics, say so gently and offer to stay on topic.
+- Never output SVG, HTML, or diagram code. If a diagram was rendered, it is displayed to the student separately; refer to it in words only.
 - VERIFICATION HONESTY: If a "validation" object is present and its overall_verdict is NOT "PASS" (i.e. FAIL, UNCERTAIN, or missing), do NOT present the solver's numeric answer as confirmed. Share the setup and approach, state plainly that the result could not be independently verified and may be wrong, and ask the student to double-check it. Do not give a definitive final number in this case. When overall_verdict is "PASS", present the answer normally.
 
 FORMATTING:
@@ -477,7 +548,8 @@ OUTPUT strict JSON:
 {
   "route": "PROBLEM" | "CONCEPT" | "CREATE" | "DRAW" | "SMALLTALK" | "OUT_OF_SCOPE",
   "rationale": "one short sentence",
-  "confidence": 0.0 to 1.0
+  "confidence": 0.0 to 1.0,
+  "problem_scope": "self_contained" | "referential"
 }
 
 ROUTE DEFINITIONS:
@@ -495,6 +567,16 @@ RULES:
 - If it is a follow-up to a problem already being solved, choose PROBLEM.
 - When unsure between CONCEPT and SMALLTALK, choose CONCEPT.
 - If the message explicitly asks to draw/sketch/show a diagram or FBD, choose DRAW.
+
+PROBLEM_SCOPE (always set this field, regardless of route, but it only matters for DRAW):
+- "self_contained": the message states everything needed to draw or solve the setup on its own — its own body and its own numbers — with NO dependency on anything said earlier. A message that only TWEAKS a value from a previous problem is NOT self-contained: it still depends on the prior turn for the rest of the setup.
+- "referential": the message depends on the prior conversation to know what to draw — it names no complete setup of its own, or it modifies a previously stated setup rather than restating one.
+
+PROBLEM_SCOPE EXAMPLES:
+- "A 25 kg crate slides down a 20 degree incline, mu_k = 0.3. Draw the FBD." -> self_contained (states its own body and every number needed).
+- "same thing but with a 10 kg block instead" -> referential (depends on the previous turn for the incline angle, friction, etc.; only the mass changes).
+- "draw that again bigger" -> referential (no setup at all here, purely a reference to what came before).
+- "also, a 2 kg ball hangs from a 1.5 m string at 30 degrees, what's the tension? by the way what was the answer to the last one" -> self_contained (a full new problem is stated in this message, even though old context is also mentioned).
 
 Return ONLY the JSON object. No prose."""
 
@@ -649,10 +731,42 @@ class OrchestratorAgent:
         response = self.client.messages.create(
             model=SONNET_MODEL,
             max_tokens=1400,
+            # claude-sonnet-5 also runs adaptive thinking on by default when
+            # `thinking` is omitted (see response_utils.py's module docstring
+            # and the visualizer() call above) — the observed truncation
+            # ("Unterminated string" at char 491, well under what 1400 output
+            # tokens of pure JSON would allow) is consistent with most of the
+            # budget going to an invisible thinking block before the JSON
+            # even starts. The output schema itself (concept_mastery floats,
+            # a short misconception list, a few strings) comfortably fits
+            # well under 1400 tokens on its own — the fix is capping thinking
+            # spend, not raising max_tokens further. "low" effort: this is
+            # incremental classification/tracking against a fixed rubric, not
+            # open-ended reasoning.
+            thinking={"type": "adaptive"},
+            output_config={"effort": "low"},
             system=STUDENT_MODELER_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
         return _parse_json(extract_text(response))
+
+    def _student_modeler_safe(self, parsed_input: dict, student_model: dict,
+                               conversation_history: list, *, fallback: dict) -> dict:
+        """student_modeler(), but a parse failure (e.g. JSON truncated mid
+        string) falls back to ``fallback`` instead of propagating the
+        {"parse_error": ...} dict. That dict is not a valid student model —
+        letting it flow into updated_student_model would silently wipe every
+        mastered/struggling concept the student has actually earned, on
+        nothing more than one bad Sonnet response. Never let a transient
+        parse failure erase real state."""
+        result = self.student_modeler(parsed_input, student_model, conversation_history)
+        if "parse_error" in result:
+            logger.warning(
+                "student_modeler returned parse_error; keeping previous value instead "
+                "of overwriting it with the failed response"
+            )
+            return fallback
+        return result
 
     def pedagogical_planner(self, parsed_input: dict, student_model: dict, conversation_history: list, raw_message: str = "") -> dict:
         user_content = (
@@ -697,21 +811,74 @@ class OrchestratorAgent:
     def visualizer(self, parsed_input: dict, solution: dict | None) -> str:
         """Draw the problem directly as an SVG string (no separate renderer).
 
-        Returns the raw SVG markup (<svg ... </svg>), not a structured spec.
+        Returns the extracted SVG markup (<svg ... </svg>), or "" if the
+        response was truncated or didn't contain a parseable <svg> element.
         """
         user_content = (
             f"Parsed problem:\n{json.dumps(parsed_input, indent=2)}\n\n"
             f"Solver solution:\n{json.dumps(solution, indent=2)}"
         )
         response = self.client.messages.create(
-            # Illustration benefits from the strongest model; falls back to
-            # claude-opus-4-7 if claude-opus-5 is unavailable.
-            model="claude-opus-5",
-            max_tokens=4096,
+            model=VISUALIZER_MODEL,
+            max_tokens=16000,
+            # No temperature: claude-opus-5(.5) rejects the parameter outright
+            # ("`temperature` is deprecated for this model", HTTP 400), the
+            # same reason it was dropped from the Sonnet calls in 66c8e7c.
+            # Layout determinism comes from the explicit LAYOUT PROCESS in
+            # VISUALIZER_PROMPT instead.
+            #
+            # thinking/effort: claude-opus-5-5 runs adaptive thinking
+            # ALWAYS ON — unlike Opus 5, `{"type": "disabled"}` is a 400 at
+            # every effort level on 5.5, so "adaptive" here isn't a choice
+            # among several, it's the only accepted value (omitting the
+            # field is equivalent). Thinking tokens still count against
+            # max_tokens on 5.5 exactly as they did on Opus 5 — that's what
+            # made this call flaky at stop_reason == "max_tokens" in the
+            # first place, and the fix is the same: control thinking depth
+            # with effort, not by trying to turn it off. "medium" already
+            # matches 5.5's own default (Opus 5's default was "high") and is
+            # Anthropic's documented starting point for 5.5 — its own
+            # testing has medium on 5.5 matching or beating Opus 5's high on
+            # comparable generation tasks, using fewer tokens per turn.
+            thinking={"type": "adaptive"},
+            output_config={"effort": "medium"},
             system=VISUALIZER_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
-        return extract_text(response).strip()
+        # getattr(response, "usage", None) first, not just getattr(response.usage,
+        # ...): a response missing .usage entirely (some test doubles) would
+        # otherwise raise here on the *outer* attribute before the inner
+        # getattr's default ever applies.
+        output_tokens = getattr(getattr(response, "usage", None), "output_tokens", "?")
+        block_types = [getattr(b, "type", "?") for b in response.content]
+        logger.info(
+            "visualizer response: stop_reason=%s output_tokens=%s block_types=%s",
+            response.stop_reason, output_tokens, block_types,
+        )
+        if response.stop_reason == "max_tokens":
+            logger.warning(
+                "visualizer response truncated (stop_reason=max_tokens, "
+                "output_tokens=%s); discarding output",
+                output_tokens,
+            )
+            return ""
+        text = extract_text(response)
+        match = _SVG_RE.search(text)
+        if not match:
+            snippet = text[:200].replace("\n", "\\n")
+            logger.warning("visualizer response contained no <svg> element. First 200 chars: %r", snippet)
+            return ""
+        svg = match.group(0)
+
+        # Deterministic backstop: Opus plans label placement from a text-only
+        # spec and cannot self-check bounding boxes, so nudge any colliding
+        # labels apart before this ever reaches a student. Never let this
+        # pass break a diagram it was only supposed to improve.
+        try:
+            svg = fix_label_collisions(svg)
+        except Exception:
+            logger.warning("fix_label_collisions raised; returning unfixed SVG", exc_info=True)
+        return svg
     
     
     def schematic_layout(self, parsed_input: dict, solution: dict | None) -> dict:
@@ -726,33 +893,6 @@ class OrchestratorAgent:
             messages=[{"role": "user", "content": user_content}],
         )
         return _parse_json(extract_text(response))
-    
-    
-    def draw_only(self, message: str, conversation_history: list) -> str:
-        """Render a diagram for an explicit draw request WITHOUT solving —
-        we draw the setup with symbolic force labels so the student can still
-        work the numbers themselves. Reuses the visualizer + both renderers."""
-        parsed = self.input_parser(message, conversation_history)
-        visualization = self.visualizer(parsed, None)   # None = don't give away solved values
-        diagram_image = render_fbd(visualization)
-        if not diagram_image:
-            layout = self.schematic_layout(parsed, None)
-            diagram_image = render_schematic(layout)
-        return diagram_image
-    
-    def _draw_created_problem(self, problem: dict) -> str:
-        """Draw a single generated problem's setup (unsolved). Returns b64 or ''."""
-        # Reuse the parser on the problem statement so we get a parsed scenario
-        stmt = problem.get("statement", "")
-        if not stmt:
-            return ""
-        parsed = self.input_parser(stmt, [])
-        visualization = self.visualizer(parsed, None)
-        img = render_fbd(visualization)
-        if not img:
-            layout = self.schematic_layout(parsed, None)
-            img = render_schematic(layout)
-        return img
     
     
         
@@ -946,18 +1086,32 @@ class OrchestratorAgent:
                 "low_confidence": False,
             }
 
-        # ---------- DRAW: Input Parser -> Visualizer -> Schematic Layout
-        #            -> Validator[retry] -> Conversationalist ----------
+        # ---------- DRAW: Input Parser -> Visualizer (SVG)
+        #            -> Conversationalist ----------
         if route == "DRAW":
-            parsed_input = self.input_parser(message, conversation_history)
+            parsed_input = self.input_parser(
+                message, _draw_history(route_decision, conversation_history)
+            )
             _log("input_parser", parsed_input)
 
-            diagram_svg = self.visualizer(parsed_input, None)
-            _log("visualizer", diagram_svg)
-
-            # The visualizer now returns SVG directly, so validation is a light
-            # non-empty / well-formed check rather than FBD-structure checking.
-            svg_ok = _svg_is_valid(diagram_svg)
+            # A failed parse must not be handed to the visualizer — it can
+            # only guess at a diagram from a broken {"parse_error": ...,
+            # "raw_response": ...} dict, which is worse than no diagram at
+            # all. Skip drawing; svg_ok stays False, which is the same
+            # signal already used for a genuinely failed visualizer call.
+            if "parse_error" in parsed_input:
+                logger.warning(
+                    "input_parser failed to parse the DRAW request; skipping visualizer"
+                )
+                diagram_svg = ""
+                svg_ok = False
+            else:
+                diagram_svg = self.visualizer(parsed_input, None)
+                _log("visualizer", diagram_svg)
+                # The visualizer now returns SVG directly, so validation is a
+                # light non-empty / well-formed check rather than
+                # FBD-structure checking.
+                svg_ok = _svg_is_valid(diagram_svg)
             validation = {
                 "task": "VALIDATE_SVG",
                 "non_empty": bool(diagram_svg.strip()),
@@ -975,7 +1129,7 @@ class OrchestratorAgent:
                 plan=plan,
                 solution=None,
                 validation=validation,
-                visualization=diagram_svg,
+                visualization=_diagram_status(svg_ok),
                 conversation_history=conversation_history,
             )
             _log("conversationalist", {"response": response_text})
@@ -986,7 +1140,7 @@ class OrchestratorAgent:
                 "solution": None,
                 "validation": validation,
                 "visualization": diagram_svg,
-                "diagram_svg": diagram_svg,
+                "diagram_svg": diagram_svg if svg_ok else "",
                 "parsed_input": parsed_input,
                 "route": route,
                 "route_decision": route_decision,
@@ -1001,8 +1155,8 @@ class OrchestratorAgent:
             create_context = {"route": "CREATE", "request": message}
 
             # 1. Modeler: build/refresh the overall student model.
-            updated_student_model = self.student_modeler(
-                create_context, student_model, conversation_history
+            updated_student_model = self._student_modeler_safe(
+                create_context, student_model, conversation_history, fallback=student_model
             )
             _log("student_modeler", updated_student_model)
 
@@ -1027,8 +1181,8 @@ class OrchestratorAgent:
                 ),
                 "plan": plan,
             }
-            misconceptions = self.student_modeler(
-                identifier_context, updated_student_model, conversation_history
+            misconceptions = self._student_modeler_safe(
+                identifier_context, updated_student_model, conversation_history, fallback={}
             )
             _log("identifier", misconceptions)
 
@@ -1049,6 +1203,7 @@ class OrchestratorAgent:
             # 5. Visualizer: draw the Creator's output directly as SVG.
             diagram_svg = self.visualizer(create_context, created)
             _log("visualizer", diagram_svg)
+            svg_ok = _svg_is_valid(diagram_svg)
 
             # 6. Validator: validate the Creator's problems only. The visualizer
             #    now returns SVG (not structured JSON), so FBD-structure
@@ -1071,7 +1226,7 @@ class OrchestratorAgent:
                 plan=plan,
                 solution=created,
                 validation=validation,
-                visualization=diagram_svg,
+                visualization=_diagram_status(svg_ok),
                 conversation_history=conversation_history,
             )
             _log("conversationalist", {"response": response_text})
@@ -1087,7 +1242,7 @@ class OrchestratorAgent:
                 "solution": created,
                 "validation": validation,
                 "visualization": diagram_svg,
-                "diagram_svg": diagram_svg,
+                "diagram_svg": diagram_svg if svg_ok else "",
                 "parsed_input": create_context,
                 "route": route,
                 "route_decision": route_decision,
@@ -1100,7 +1255,9 @@ class OrchestratorAgent:
         parsed_input = self.input_parser(message, conversation_history)
         _log("input_parser", parsed_input)
 
-        updated_student_model = self.student_modeler(parsed_input, student_model, conversation_history)
+        updated_student_model = self._student_modeler_safe(
+            parsed_input, student_model, conversation_history, fallback=student_model
+        )
         _log("student_modeler", updated_student_model)
 
         plan = self.pedagogical_planner(parsed_input, updated_student_model, conversation_history, raw_message=message)
@@ -1110,6 +1267,7 @@ class OrchestratorAgent:
         validation = None
         visualization = None
         diagram_svg = ""
+        svg_ok = False
         low_confidence = False
 
         if plan.get("decision") == "SOLVE":
@@ -1118,7 +1276,8 @@ class OrchestratorAgent:
             )
             visualization = self.visualizer(parsed_input, solution)
             _log("visualizer", visualization)
-            diagram_svg = visualization
+            svg_ok = _svg_is_valid(visualization)
+            diagram_svg = visualization if svg_ok else ""
 
         response_text = self.conversationalist(
             student_message=message,
@@ -1127,7 +1286,7 @@ class OrchestratorAgent:
             plan=plan,
             solution=solution,
             validation=validation,
-            visualization=visualization,
+            visualization=_diagram_status(svg_ok),
             conversation_history=conversation_history,
         )
         _log("conversationalist", {"response": response_text})
@@ -1249,6 +1408,12 @@ class OrchestratorAgent:
                     if not stmt:
                         continue
                     parsed_p = self.input_parser(stmt, [])
+                    if "parse_error" in parsed_p:
+                        logger.warning(
+                            "input_parser failed to parse a created problem for DRAW; "
+                            "skipping visualizer for it"
+                        )
+                        continue
                     svg_p = self.visualizer(parsed_p, None)
                     if _svg_is_valid(svg_p):
                         svgs.append(svg_p)
@@ -1263,8 +1428,20 @@ class OrchestratorAgent:
             # Single-diagram DRAW mirrors run(): Input Parser -> Visualizer (SVG)
             # -> Conversationalist. The visualizer draws SVG directly.
             yield {"type": "status", "text": "Sketching the setup…"}
-            parsed_input = self.input_parser(message + source_block, conversation_history)
-            diagram_svg = self.visualizer(parsed_input, None)
+            parsed_input = self.input_parser(
+                message + source_block, _draw_history(route_decision, conversation_history)
+            )
+
+            # A failed parse must not be handed to the visualizer — see the
+            # matching guard in run(). svg_ok stays False (skips drawing)
+            # exactly as it would for a genuinely failed visualizer call.
+            if "parse_error" in parsed_input:
+                logger.warning(
+                    "input_parser failed to parse the DRAW request; skipping visualizer"
+                )
+                diagram_svg = ""
+            else:
+                diagram_svg = self.visualizer(parsed_input, None)
 
             # Lightweight non-empty / well-formed SVG check (no FBD-structure
             # validation, since the output is SVG rather than structured JSON).
@@ -1275,14 +1452,16 @@ class OrchestratorAgent:
                 "well_formed": svg_ok,
                 "overall_verdict": "PASS" if svg_ok else "FAIL",
             }
+            logger.info("DRAW visualizer output (svg_ok=%s): %s", svg_ok, diagram_svg[:500])
+            logger.info("DRAW validation: %s", validation)
 
             yield {"type": "meta", "student_model": student_model, "route": route,
-                   "decision": "DRAW", "diagram_svg": diagram_svg}
+                   "decision": "DRAW", "diagram_svg": diagram_svg if svg_ok else ""}
 
             context_bundle = {
                 "student_message": message, "parsed_input": parsed_input,
                 "student_model": student_model, "plan": {"decision": "DRAW"},
-                "solution": None, "validation": validation, "visualization": diagram_svg,
+                "solution": None, "validation": validation, "visualization": _diagram_status(svg_ok),
                 "source_documents": source_block,
             }
             user_content = f"{convo}Context bundle:\n{json.dumps(context_bundle, indent=2)}"
@@ -1303,8 +1482,8 @@ class OrchestratorAgent:
             create_context = {"route": "CREATE", "request": message}
 
             yield {"type": "status", "text": "Sizing up where you're at…"}
-            updated_student_model = self.student_modeler(
-                create_context, student_model, conversation_history
+            updated_student_model = self._student_modeler_safe(
+                create_context, student_model, conversation_history, fallback=student_model
             )
             plan = self.pedagogical_planner(
                 create_context, updated_student_model, conversation_history, raw_message=message
@@ -1323,8 +1502,8 @@ class OrchestratorAgent:
                 ),
                 "plan": plan,
             }
-            misconceptions = self.student_modeler(
-                identifier_context, updated_student_model, conversation_history
+            misconceptions = self._student_modeler_safe(
+                identifier_context, updated_student_model, conversation_history, fallback={}
             )
 
             yield {"type": "status", "text": "Writing practice problems…"}
@@ -1342,18 +1521,19 @@ class OrchestratorAgent:
             # Visualizer draws the Creator's output directly as SVG. The
             # Validator checks the created problems only (SVG isn't structured).
             diagram_svg = self.visualizer(create_context, created)
+            svg_ok = _svg_is_valid(diagram_svg)
             validation = self.validator(
                 create_context,
                 {"created_problems": created},
             )
 
             yield {"type": "meta", "student_model": updated_student_model, "route": route,
-                   "decision": "CREATE", "diagram_svg": diagram_svg}
+                   "decision": "CREATE", "diagram_svg": diagram_svg if svg_ok else ""}
 
             context_bundle = {
                 "student_message": message, "parsed_input": create_context,
                 "student_model": updated_student_model, "plan": plan,
-                "solution": created, "validation": validation, "visualization": diagram_svg,
+                "solution": created, "validation": validation, "visualization": _diagram_status(svg_ok),
                 "source_documents": source_block,
             }
             user_content = f"{convo}Context bundle:\n{json.dumps(context_bundle, indent=2)}"
@@ -1384,13 +1564,16 @@ class OrchestratorAgent:
         # PROBLEM path
         yield {"type": "status", "text": "Reading the problem\u2026"}
         parsed_input = self.input_parser(message + source_block, conversation_history)
-        updated_student_model = self.student_modeler(parsed_input, student_model, conversation_history)
+        updated_student_model = self._student_modeler_safe(
+            parsed_input, student_model, conversation_history, fallback=student_model
+        )
         plan = self.pedagogical_planner(parsed_input, updated_student_model,
                                         conversation_history,
                                         raw_message=message + source_block)
 
         solution = validation = visualization = None
         diagram_svg = ""
+        svg_ok = False
         if plan.get("decision") == "SOLVE":
             yield {"type": "status", "text": "Solving\u2026"}
             solution = self.solver(parsed_input)
@@ -1398,7 +1581,8 @@ class OrchestratorAgent:
             validation = self.validator(parsed_input, solution)
             yield {"type": "status", "text": "Drawing the diagram\u2026"}
             visualization = self.visualizer(parsed_input, solution)
-            diagram_svg = visualization
+            svg_ok = _svg_is_valid(visualization)
+            diagram_svg = visualization if svg_ok else ""
 
         # meta BEFORE tokens so the frontend can attach diagram + student_model first
         yield {"type": "meta", "student_model": updated_student_model, "route": route,
@@ -1407,7 +1591,7 @@ class OrchestratorAgent:
         context_bundle = {
             "student_message": message, "parsed_input": parsed_input,
             "student_model": updated_student_model, "plan": plan,
-            "solution": solution, "validation": validation, "visualization": visualization,
+            "solution": solution, "validation": validation, "visualization": _diagram_status(svg_ok),
             "source_documents": source_block,
         }
         user_content = f"{convo}Context bundle:\n{json.dumps(context_bundle, indent=2)}"
@@ -1501,6 +1685,37 @@ def _new_session_id() -> str:
 MAX_HISTORY_MESSAGES = 20
 
 
+# --- DRAW history gating -------------------------------------------------
+# A draw request that carries its own problem statement must be parsed on its
+# own, with NO conversation history: input_parser prepends the whole
+# conversation, so a fresh "2 kg ball on a 1.5 m string" otherwise gets fused
+# with the block-on-an-incline from three turns ago and the wrong problem is
+# drawn. A referential request ("draw that one", "same thing but 10 kg") has
+# the opposite need — the history is the only place the referent (or the rest
+# of the setup being tweaked) lives.
+#
+# The Router already reads the message as an LLM call and classifies intent;
+# it carries the "problem_scope" field ("self_contained" | "referential") in
+# its JSON output. A regex used to make this call independently, but it had
+# no way to tell "a 10 kg block instead" (referential — depends on the
+# previous turn for the rest of the setup) from a genuinely new problem that
+# happens to share the same shape of words. The Router reads the conversation
+# and can tell the difference; a second regex pass over the message alone
+# can't.
+
+
+def _draw_history(route_decision: dict, conversation_history: list) -> list:
+    """The history a DRAW request should be parsed against: [] when the
+    Router marked the message self_contained, the real history otherwise —
+    including when problem_scope is missing or an unrecognized value, since
+    an unparseable/incomplete router response must never strip history.
+    """
+    scope = (route_decision or {}).get("problem_scope")
+    if scope == "self_contained":
+        return []
+    return conversation_history or []
+
+
 def _format_history(conversation_history: list,
                     max_messages: int = MAX_HISTORY_MESSAGES) -> str:
     """Central formatter for conversation history. Includes only the most
@@ -1556,6 +1771,11 @@ def _render_created_problems(created: dict) -> str:
     return "\n".join(out).strip() or "Here's your problem."
 
 
+# Extracts the first <svg>...</svg> element, tolerating code fences, an
+# <?xml ?> prolog, or leading prose around it in the model's raw response.
+_SVG_RE = re.compile(r"<svg[\s\S]*?</svg>", re.IGNORECASE)
+
+
 def _svg_is_valid(svg: str) -> bool:
     """True if the string looks like a non-empty, well-formed SVG document.
 
@@ -1567,39 +1787,88 @@ def _svg_is_valid(svg: str) -> bool:
     return bool(s) and s.startswith("<svg") and s.endswith("</svg>")
 
 
+def _diagram_status(svg_ok: bool) -> dict:
+    """Placeholder passed to the conversationalist instead of raw SVG markup,
+    so its reply can't echo the diagram code (and burn its max_tokens budget
+    on it). It only needs to know whether a diagram was rendered."""
+    return {"diagram_rendered": bool(svg_ok)}
+
+
+def _extract_json_object(text: str) -> str | None:
+    """Find the first complete, brace-balanced {...} object in ``text``,
+    honoring string literals so a '{' or '}' inside a JSON string value
+    doesn't miscount the nesting depth. Returns the substring spanning the
+    outermost object, or None if no balanced object is found (e.g. the JSON
+    was truncated before its closing brace ever arrived)."""
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None  # never balanced — truncated mid-object
+
+
 def _parse_json(text: str) -> dict:
     """
     Extract and parse a JSON object from the model's response.
 
-    Strips markdown code fences if present. This is the JSON failure boundary:
-    on malformed/empty/non-JSON output it returns a dict carrying a
-    ``parse_error`` key (and the raw response for debugging) rather than
-    raising, and logs a warning so the failure is never silent. Downstream
-    consumers must treat a ``parse_error`` result as invalid agent output.
+    Strips a leading markdown code fence if present, then extracts the FIRST
+    complete, brace-balanced {...} object and parses only that — anything
+    before it (leading prose) or after it (a trailing fence, trailing prose,
+    a second code block) is ignored rather than tripping json.loads on
+    "Extra data". This is the JSON failure boundary: on malformed/empty/
+    non-JSON/truncated output it returns a dict carrying a ``parse_error``
+    key (and the raw response for debugging) rather than raising, and logs a
+    warning so the failure is never silent. Downstream consumers must treat
+    a ``parse_error`` result as invalid agent output.
 
     Note: this is a DIFFERENT failure class from the ThinkingBlock/text
     extraction issue, which is handled upstream by response_utils.extract_text.
     An empty ``text`` here (e.g. a response with no text block) still yields a
     logged parse_error rather than a crash.
     """
-    stripped = text.strip()
-    # Remove ```json ... ``` or ``` ... ``` fences
+    stripped = (text or "").strip()
+    # A leading ```json / ``` fence marker is dropped outright — the matching
+    # closing fence (and anything after it) doesn't need finding here, since
+    # the balanced-object scan below naturally stops at the JSON object's own
+    # closing brace and ignores everything past it.
     if stripped.startswith("```"):
-        lines = stripped.splitlines()
-        # Drop first and last fence lines
-        inner = lines[1:] if lines[0].startswith("```") else lines
-        if inner and inner[-1].strip() == "```":
-            inner = inner[:-1]
-        stripped = "\n".join(inner).strip()
-    try:
-        return json.loads(stripped)
-    except json.JSONDecodeError as exc:
-        # Never silent: log a truncated snippet (not the full body) so malformed
-        # agent output is diagnosable without dumping large/sensitive content.
-        snippet = (text or "")[:200].replace("\n", "\\n")
-        logger.warning("Agent returned unparseable JSON (%s). First 200 chars: %r",
-                       exc, snippet)
-        return {"parse_error": str(exc), "raw_response": text}
+        first_newline = stripped.find("\n")
+        stripped = stripped[first_newline + 1:] if first_newline != -1 else ""
+
+    candidate = _extract_json_object(stripped)
+    if candidate is not None:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass  # fall through to the shared parse_error path below
+
+    # Never silent: log a truncated snippet (not the full body) so malformed
+    # agent output is diagnosable without dumping large/sensitive content.
+    snippet = (text or "")[:200].replace("\n", "\\n")
+    reason = "no balanced JSON object found" if candidate is None else "invalid JSON"
+    logger.warning("Agent returned unparseable JSON (%s). First 200 chars: %r",
+                   reason, snippet)
+    return {"parse_error": reason, "raw_response": text}
     
     
     

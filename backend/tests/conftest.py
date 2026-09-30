@@ -36,8 +36,9 @@ class FakeThinkingBlock:
 
 class FakeResponse:
     """Stands in for a Messages API response object."""
-    def __init__(self, blocks):
+    def __init__(self, blocks, stop_reason: str = "end_turn"):
         self.content = list(blocks)
+        self.stop_reason = stop_reason
 
 
 class FakeStreamCtx:
