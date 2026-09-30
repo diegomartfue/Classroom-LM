@@ -1,0 +1,6 @@
+# Professor codes, one per line. Copy to professors.txt (gitignored) on the
+# server. A professor signs in on the same screen as students, but anything
+# they upload becomes shared course material every participant can see and
+# the tutor can use. Use a long random code; this one grants upload rights.
+# A code that is also in participants.txt is treated as a participant only.
+PROF-8XK2-QM4T

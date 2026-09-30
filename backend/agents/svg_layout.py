@@ -11,9 +11,16 @@ of the canvas even though the shape itself is a thin triangle — bbox-only
 collision made every candidate position "collide" with that oversized box, so
 a label already touching the hypotenuse could never be moved (the reported
 bug: "f_k", "W", and "θ" labels sitting on the incline's sloped edge, left in
-place because nothing looked clear). Curved path commands (C/S/Q/T/A) are not
-cheaply reducible to exact segments, so those still fall back to the
-over-approximated bounding box from _curved_path_bbox().
+place because nothing looked clear). Curves and arcs (C/S/Q/T/A) are sampled
+into short segments too (_path_polylines). They used to fall back to a box
+padded by the arc radius around both endpoints — for an angle arc that box
+covered the whole corner where the "θ = 30°" label has to go, so the label
+could never be placed.
+
+Coordinates respect translate() on the element and its ancestor groups, and
+font-size is inherited from ancestors (attribute or style). Anything under
+a rotate/scale/matrix/skew transform can't be measured this simply, so it is
+neither moved nor treated as an obstacle.
 
 Why this exists: VISUALIZER_PROMPT's LAYOUT PROCESS asks Opus to plan label
 placement so nothing overlaps, but it is a text-only spec — the model has no
@@ -47,6 +54,7 @@ metrics if Pillow's transitive path ever changes.
 from __future__ import annotations
 
 import logging
+import math
 import re
 import xml.etree.ElementTree as ET
 
@@ -116,96 +124,203 @@ def _parse_viewbox(root: ET.Element) -> tuple[float, float, float, float]:
     return (0.0, 0.0, w, h)
 
 
-def _path_points(d: str) -> list[tuple[float, float]]:
-    """Coordinates a path's 'd' visits: exact for straight segments (M/L/H/V),
-    an over-approximation for curves and arcs (control points / an arc's
-    radius box are included). Over-approximating only ever widens the
-    estimated bbox, which is safe for a collision check — it can cause an
-    unnecessary nudge, never let a real overlap through undetected."""
-    points: list[tuple[float, float]] = []
+_CURVE_SAMPLES = 12
+
+
+def _arc_points(p0: Point, rx: float, ry: float, phi_deg: float, large: bool,
+                sweep: bool, p1: Point) -> list[Point]:
+    """Points along an SVG elliptical arc, endpoint p0 excluded (SVG spec
+    F.6.5 endpoint-to-center conversion)."""
+    if p0 == p1:
+        return []
+    rx, ry = abs(rx), abs(ry)
+    if rx == 0 or ry == 0:
+        return [p1]
+    phi = math.radians(phi_deg)
+    cos_p, sin_p = math.cos(phi), math.sin(phi)
+    dx2, dy2 = (p0[0] - p1[0]) / 2.0, (p0[1] - p1[1]) / 2.0
+    x1p = cos_p * dx2 + sin_p * dy2
+    y1p = -sin_p * dx2 + cos_p * dy2
+    lam = (x1p / rx) ** 2 + (y1p / ry) ** 2
+    if lam > 1:
+        rx, ry = rx * math.sqrt(lam), ry * math.sqrt(lam)
+    num = rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p
+    den = rx * rx * y1p * y1p + ry * ry * x1p * x1p
+    coef = math.sqrt(max(0.0, num / den)) if den else 0.0
+    if large == sweep:
+        coef = -coef
+    cxp, cyp = coef * rx * y1p / ry, -coef * ry * x1p / rx
+    cx = cos_p * cxp - sin_p * cyp + (p0[0] + p1[0]) / 2.0
+    cy = sin_p * cxp + cos_p * cyp + (p0[1] + p1[1]) / 2.0
+
+    def angle(ux, uy, vx, vy):
+        return math.atan2(ux * vy - uy * vx, ux * vx + uy * vy)
+
+    ux, uy = (x1p - cxp) / rx, (y1p - cyp) / ry
+    vx, vy = (-x1p - cxp) / rx, (-y1p - cyp) / ry
+    theta1 = angle(1.0, 0.0, ux, uy)
+    dtheta = angle(ux, uy, vx, vy)
+    if not sweep and dtheta > 0:
+        dtheta -= 2 * math.pi
+    elif sweep and dtheta < 0:
+        dtheta += 2 * math.pi
+    pts = []
+    for i in range(1, _CURVE_SAMPLES + 1):
+        t = theta1 + dtheta * i / _CURVE_SAMPLES
+        pts.append((cx + rx * math.cos(t) * cos_p - ry * math.sin(t) * sin_p,
+                    cy + rx * math.cos(t) * sin_p + ry * math.sin(t) * cos_p))
+    pts[-1] = p1
+    return pts
+
+
+def _bezier_points(ctrl: list[Point]) -> list[Point]:
+    """Points along a quadratic/cubic Bezier, first control point excluded."""
+    pts = []
+    for i in range(1, _CURVE_SAMPLES + 1):
+        t = i / _CURVE_SAMPLES
+        layer = list(ctrl)
+        while len(layer) > 1:
+            layer = [((1 - t) * a[0] + t * b[0], (1 - t) * a[1] + t * b[1])
+                     for a, b in zip(layer, layer[1:])]
+        pts.append(layer[0])
+    return pts
+
+
+def _path_polylines(d: str) -> list[tuple[list[Point], bool]]:
+    """Each subpath of ``d`` as (points, closed): exact for straight
+    commands, sampled for curves and arcs."""
+    polylines: list[tuple[list[Point], bool]] = []
     if not d:
-        return points
-    cur = (0.0, 0.0)
-    start = (0.0, 0.0)
-    tokens = re.findall(r"[MLHVCSQTAZmlhvcsqtaz]|-?\d*\.?\d+(?:[eE][-+]?\d+)?", d)
+        return polylines
+    tokens = re.findall(r"[MLHVCSQTAZmlhvcsqtaz]|[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", d)
+    cur = start = (0.0, 0.0)
+    pts: list[Point] = []
+    last_ctrl: Point | None = None   # for S/T reflection
+    last_cmd = ""
+
+    def flush(closed: bool):
+        nonlocal pts
+        if len(pts) >= 2:
+            polylines.append((pts, closed))
+        pts = []
 
     idx = 0
     while idx < len(tokens):
         tok = tokens[idx]
-        if not (tok[0].isalpha()):
+        if not tok[0].isalpha():
             idx += 1  # stray number with no preceding command; skip defensively
             continue
         cmd = tok
         idx += 1
-        c = cmd.upper()
-        rel = cmd.islower()
+        c, rel = cmd.upper(), cmd.islower()
         argc = _ARG_COUNTS.get(c)
         if argc is None:
-            continue  # unknown command letter; nothing more we can parse safely
-        if argc == 0:  # Z / z
-            cur = start
-            points.append(cur)
             continue
-
+        if argc == 0:  # Z / z
+            if pts:
+                pts.append(start)
+            flush(closed=True)
+            cur, last_ctrl, last_cmd = start, None, "Z"
+            continue
         first_pair = True
         while idx + argc <= len(tokens) and all(
             not tokens[idx + k][0].isalpha() for k in range(argc)
         ):
-            nums = [float(tokens[idx + k]) for k in range(argc)]
+            n = [float(tokens[idx + k]) for k in range(argc)]
             idx += argc
 
-            if c in ("M", "L", "T"):
-                x, y = nums
-                if rel:
-                    x, y = cur[0] + x, cur[1] + y
-                cur = (x, y)
-                if c == "M" and first_pair:
-                    start = cur
-                points.append(cur)
-            elif c == "H":
-                x = cur[0] + nums[0] if rel else nums[0]
-                cur = (x, cur[1])
-                points.append(cur)
-            elif c == "V":
-                y = cur[1] + nums[0] if rel else nums[0]
-                cur = (cur[0], y)
-                points.append(cur)
-            elif c == "C":
-                for (x, y) in [(nums[0], nums[1]), (nums[2], nums[3]), (nums[4], nums[5])]:
-                    px, py = (cur[0] + x, cur[1] + y) if rel else (x, y)
-                    points.append((px, py))
-                cur = points[-1]
-            elif c in ("S", "Q"):
-                for (x, y) in [(nums[0], nums[1]), (nums[2], nums[3])]:
-                    px, py = (cur[0] + x, cur[1] + y) if rel else (x, y)
-                    points.append((px, py))
-                cur = points[-1]
-            elif c == "A":
-                rx, ry = nums[0], nums[1]
-                x, y = nums[5], nums[6]
-                if rel:
-                    x, y = cur[0] + x, cur[1] + y
-                # Coarse arc-extent estimate: the endpoint plus a box padded
-                # by (rx, ry) around both the start and end points.
-                points.append((x, y))
-                points.append((x - rx, y - ry))
-                points.append((x + rx, y + ry))
-                points.append((cur[0] - rx, cur[1] - ry))
-                points.append((cur[0] + rx, cur[1] + ry))
-                cur = (x, y)
+            def absolute(x, y):
+                return (cur[0] + x, cur[1] + y) if rel else (x, y)
 
-            first_pair = False
             if c == "M":
-                # Per the SVG spec, extra coordinate pairs after the first M
-                # are implicit lineto commands.
-                c, cmd, rel = "L", ("l" if rel else "L"), rel
-    return points
+                if first_pair:
+                    flush(closed=False)
+                    cur = start = absolute(n[0], n[1])
+                    pts = [cur]
+                else:  # implicit lineto
+                    cur = absolute(n[0], n[1])
+                    pts.append(cur)
+                last_ctrl = None
+            elif c == "L":
+                cur = absolute(n[0], n[1])
+                pts.append(cur)
+                last_ctrl = None
+            elif c == "H":
+                cur = (cur[0] + n[0] if rel else n[0], cur[1])
+                pts.append(cur)
+                last_ctrl = None
+            elif c == "V":
+                cur = (cur[0], cur[1] + n[0] if rel else n[0])
+                pts.append(cur)
+                last_ctrl = None
+            elif c in ("C", "S"):
+                if c == "C":
+                    c1, c2, end = absolute(n[0], n[1]), absolute(n[2], n[3]), absolute(n[4], n[5])
+                else:
+                    c1 = ((2 * cur[0] - last_ctrl[0], 2 * cur[1] - last_ctrl[1])
+                          if last_ctrl and last_cmd in ("C", "S") else cur)
+                    c2, end = absolute(n[0], n[1]), absolute(n[2], n[3])
+                pts.extend(_bezier_points([cur, c1, c2, end]))
+                cur, last_ctrl = end, c2
+            elif c in ("Q", "T"):
+                if c == "Q":
+                    q, end = absolute(n[0], n[1]), absolute(n[2], n[3])
+                else:
+                    q = ((2 * cur[0] - last_ctrl[0], 2 * cur[1] - last_ctrl[1])
+                         if last_ctrl and last_cmd in ("Q", "T") else cur)
+                    end = absolute(n[0], n[1])
+                pts.extend(_bezier_points([cur, q, end]))
+                cur, last_ctrl = end, q
+            elif c == "A":
+                end = absolute(n[5], n[6])
+                pts.extend(_arc_points(cur, n[0], n[1], n[2], bool(n[3]), bool(n[4]), end))
+                cur, last_ctrl = end, None
+            if not pts:
+                pts = [cur]
+            last_cmd = c
+            first_pair = False
+    flush(closed=False)
+    return polylines
 
 
-def _text_bbox(el: ET.Element) -> BBox:
-    x = _num(el.get("x"))
-    y = _num(el.get("y"))
-    font_size = _num(el.get("font-size"), 16.0)
+_TRANSLATE_RE = re.compile(r"translate\(\s*([-+]?[\d.eE+-]+)(?:[\s,]+([-+]?[\d.eE+-]+))?\s*\)")
+
+
+def _parse_transform(value: str | None) -> tuple[float, float] | None:
+    """(tx, ty) for a transform made only of translate()s; None for any
+    other transform (rotate/scale/matrix/skew), which this pass can't
+    measure through."""
+    if not value or not value.strip():
+        return (0.0, 0.0)
+    tx = ty = 0.0
+    rest = value
+    for m in _TRANSLATE_RE.finditer(value):
+        tx += float(m.group(1))
+        ty += float(m.group(2) or 0.0)
+        rest = rest.replace(m.group(0), "", 1)
+    return (tx, ty) if not rest.strip(" ,") else None
+
+
+_FONT_SIZE_STYLE_RE = re.compile(r"font-size\s*:\s*([\d.]+)")
+
+
+def _own_font_size(el: ET.Element) -> float | None:
+    m = _FONT_SIZE_STYLE_RE.search(el.get("style", "") or "")
+    raw = m.group(1) if m else el.get("font-size")
+    if raw is None:
+        return None
+    m = re.match(r"\s*([\d.]+)", str(raw))
+    return float(m.group(1)) if m else None
+
+
+def _text_bbox(el: ET.Element, font_size: float | None = None,
+               offset: Point = (0.0, 0.0)) -> BBox:
+    """Estimated bbox in canvas coordinates. ``font_size`` is the inherited
+    size when the element doesn't set its own; ``offset`` is the summed
+    translate() of its ancestors."""
+    x = _num(el.get("x")) + offset[0]
+    y = _num(el.get("y")) + offset[1]
+    font_size = _own_font_size(el) or font_size or 16.0
     anchor = el.get("text-anchor", "start")
     baseline = el.get("dominant-baseline", "")
     text = "".join(el.itertext())
@@ -234,22 +349,6 @@ def _polygon_points(points_attr: str) -> list[Point]:
     coords = re.findall(r"-?\d*\.?\d+(?:[eE][-+]?\d+)?", points_attr or "")
     nums = [float(n) for n in coords]
     return list(zip(nums[0::2], nums[1::2]))
-
-
-def _path_command_letters(d: str) -> set[str]:
-    return set(c.upper() for c in re.findall(r"[A-Za-z]", d or ""))
-
-
-def _curved_path_bbox(d: str) -> BBox | None:
-    """Bounding-box fallback for a <path> that uses curve/arc commands —
-    control points and arc-radius boxes only ever widen the estimate, so
-    this remains a safe (if coarse) over-approximation, per _path_points."""
-    pts = _path_points(d)
-    if not pts:
-        return None
-    xs = [p[0] for p in pts]
-    ys = [p[1] for p in pts]
-    return (min(xs), min(ys), max(xs), max(ys))
 
 
 def _is_filled(el: ET.Element) -> bool:
@@ -413,16 +512,28 @@ def _margin_shift(bbox: BBox, viewbox: tuple[float, float, float, float]) -> tup
     return dx, dy
 
 
-def _candidates(center: tuple[float, float], orig_xy: tuple[float, float]) -> list[tuple[float, float]]:
-    """Offsets to try, in order: 14px further from the diagram center along
-    the label's own existing offset direction, then the four cardinal
-    directions at 14px, then the same four at 28px."""
+_RINGS = (8.0, 14.0, 20.0, 28.0, 34.0, _MAX_TOTAL_MOVE)
+_DIRECTIONS = [(math.cos(math.radians(a)), math.sin(math.radians(a)))
+               for a in range(0, 360, 30)]
+
+
+def _candidates(center: tuple[float, float], orig_xy: tuple[float, float],
+                normals: list[Point] = ()) -> list[tuple[float, float]]:
+    """Offsets to try, nearest first, never beyond _MAX_TOTAL_MOVE. At each
+    distance: away from the diagram center, then along the normals of the
+    edges the label currently touches (the short way off a sloped edge),
+    then 12 evenly spaced directions. Up/down/left/right only used to
+    need up to 2x the distance to clear a 30 degree slope."""
     cx, cy = center
     x, y = orig_xy
     ddx, ddy = x - cx, y - cy
     dist = (ddx ** 2 + ddy ** 2) ** 0.5
     away = (ddx / dist, ddy / dist) if dist > 1e-6 else (0.0, -1.0)
-    return [(away[0] * 14.0, away[1] * 14.0)] + _CARDINAL_14 + _CARDINAL_28
+    directions = [away]
+    for nx, ny in normals:
+        directions += [(nx, ny), (-nx, -ny)]
+    directions += _DIRECTIONS
+    return [(ux * r, uy * r) for r in _RINGS for ux, uy in directions]
 
 
 def fix_label_collisions(svg: str) -> str:
@@ -461,48 +572,64 @@ def _fix(root: ET.Element, original: str) -> str:
             defs_ids.update(id(sub) for sub in defs_el.iter())
 
     texts: list[list] = []          # [element, bbox] pairs, bbox mutated as labels move
-    geom_bboxes: list[BBox] = []    # curved paths only — can't cheaply segment these
     geom_segments: list[Segment] = []
     filled_regions: list[list[Point]] = []
+    skipped_transformed = 0
 
-    for el in root.iter():
+    def shifted(points, off):
+        return [(px + off[0], py + off[1]) for px, py in points]
+
+    def walk(el: ET.Element, offset: Point, font_size: float | None):
+        nonlocal skipped_transformed
         if id(el) in defs_ids:
-            continue
+            return
+        own = _parse_transform(el.get("transform"))
+        if own is None:
+            skipped_transformed += 1
+            return  # rotate/scale/matrix: can't measure what's inside
+        offset = (offset[0] + own[0], offset[1] + own[1])
+        font_size = _own_font_size(el) or font_size
         tag = _local(el.tag)
         if tag == "text":
-            texts.append([el, _text_bbox(el)])
-            continue
-        if tag not in _GEOMETRY_TAGS or _is_invisible(el):
-            continue
-
-        if tag == "line":
-            p1 = (_num(el.get("x1")), _num(el.get("y1")))
-            p2 = (_num(el.get("x2")), _num(el.get("y2")))
-            geom_segments.append((p1, p2))
-        elif tag == "polygon":
-            pts = _polygon_points(el.get("points", ""))
-            if len(pts) >= 2:
-                geom_segments.extend(_closed_segments(pts))
-                if len(pts) >= 3 and _is_filled(el):
-                    filled_regions.append(pts)
-        elif tag == "path":
-            d = el.get("d", "")
-            letters = _path_command_letters(d)
-            if letters and letters <= _STRAIGHT_PATH_CMDS:
-                pts = _path_points(d)  # exact for straight-only commands
+            texts.append([el, _text_bbox(el, font_size, offset)])
+            return
+        if tag in _GEOMETRY_TAGS and not _is_invisible(el):
+            if tag == "line":
+                p1 = (_num(el.get("x1")) + offset[0], _num(el.get("y1")) + offset[1])
+                p2 = (_num(el.get("x2")) + offset[0], _num(el.get("y2")) + offset[1])
+                geom_segments.append((p1, p2))
+            elif tag == "polygon":
+                pts = shifted(_polygon_points(el.get("points", "")), offset)
                 if len(pts) >= 2:
-                    geom_segments.extend(_open_segments(pts))
-                    if "Z" in letters and len(pts) >= 3 and _is_filled(el):
+                    geom_segments.extend(_closed_segments(pts))
+                    if len(pts) >= 3 and _is_filled(el):
                         filled_regions.append(pts)
-            else:
-                bbox = _curved_path_bbox(d)
-                if bbox is not None:
-                    geom_bboxes.append(bbox)
+            elif tag == "path":
+                for pts, closed in _path_polylines(el.get("d", "")):
+                    pts = shifted(pts, offset)
+                    geom_segments.extend(_open_segments(pts))
+                    if closed and len(pts) >= 3 and _is_filled(el):
+                        filled_regions.append(pts)
+        for child in el:
+            walk(child, offset, font_size)
+
+    walk(root, (0.0, 0.0), None)
+    if skipped_transformed:
+        logger.debug("fix_label_collisions: skipped %d element(s) under a non-translate transform",
+                     skipped_transformed)
+
+    def touched_normals(bbox: BBox) -> list[Point]:
+        padded = _inflate(bbox, _PADDING)
+        normals = []
+        for p1, p2 in geom_segments:
+            if _segment_intersects_rect(p1, p2, padded):
+                ex, ey = p2[0] - p1[0], p2[1] - p1[1]
+                length = (ex * ex + ey * ey) ** 0.5
+                if length > 1e-9:
+                    normals.append((-ey / length, ex / length))
+        return normals[:4]
 
     def collides(self_index: int, bbox: BBox) -> bool:
-        for g in geom_bboxes:
-            if _overlaps(bbox, g):
-                return True
         padded = _inflate(bbox, _PADDING)
         for p1, p2 in geom_segments:
             if _segment_intersects_rect(p1, p2, padded):
@@ -527,7 +654,7 @@ def _fix(root: ET.Element, original: str) -> str:
             continue
         x0, y0 = _num(el.get("x")), _num(el.get("y"))
         placed = False
-        for dx, dy in _candidates(center, (x0, y0)):
+        for dx, dy in _candidates(center, _bbox_center(bbox), touched_normals(bbox)):
             if (dx ** 2 + dy ** 2) ** 0.5 > _MAX_TOTAL_MOVE:
                 continue
             new_bbox = _shift(bbox, dx, dy)
@@ -566,9 +693,11 @@ def _fix(root: ET.Element, original: str) -> str:
                 "".join(el.itertext()), dx, dy,
             )
         else:
-            logger.debug(
-                "fix_label_collisions: no clear spot for label %r; left in place",
-                "".join(el.itertext()),
+            # Visible in normal logs: a label still touching geometry is a
+            # defect a student will see.
+            logger.warning(
+                "fix_label_collisions: no clear spot within %.0fpx for label %r; left in place",
+                _MAX_TOTAL_MOVE, "".join(el.itertext()),
             )
 
     if moved == 0:

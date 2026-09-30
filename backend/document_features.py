@@ -45,9 +45,9 @@ RULES:
 """
 
 
-def summarize(doc_ids: list, instruction: str = "") -> dict:
-    """Summarize one or more stored documents."""
-    context = get_context(doc_ids)
+def summarize(doc_ids: list, identity, instruction: str = "") -> dict:
+    """Summarize one or more stored documents the caller may see."""
+    context = get_context(doc_ids, identity)
     if not context.strip():
         raise DocumentError("Those documents have no text to summarize.")
 
@@ -211,12 +211,12 @@ def _extract_json(text: str) -> str:
         raise QuizError("No JSON object found in the model's reply.")
     return s[start:end + 1]
 
-def make_quiz(doc_ids: list, num_questions: int = 5) -> dict:
-    """Generate a multiple-choice quiz from stored documents."""
+def make_quiz(doc_ids: list, identity, num_questions: int = 5) -> dict:
+    """Generate a multiple-choice quiz from stored documents the caller may see."""
     if not 1 <= num_questions <= 20:
         raise DocumentError("Ask for between 1 and 20 questions.")
 
-    context = get_context(doc_ids)
+    context = get_context(doc_ids, identity)
     if not context.strip():
         raise DocumentError("Those documents have no text to quiz on.")
 

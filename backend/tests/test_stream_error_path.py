@@ -31,7 +31,8 @@ def _consume(resp):
 
 def test_stream_error_is_generic_and_logged(monkeypatch, caplog):
     class FailingAgent:
-        def run_stream(self, message, conversation_history, student_model, source_text):
+        def run_stream(self, message, conversation_history, student_model, source_text,
+                       session_id=None, student_id=None, hint_level=None):
             raise RuntimeError("SECRET internal detail: content[0].text boom")
             yield {}  # unreachable; marks this function a generator
 
@@ -39,7 +40,7 @@ def test_stream_error_is_generic_and_logged(monkeypatch, caplog):
 
     req = main.TutorRequest(message="hi", conversation_history=[],
                             student_model={}, doc_ids=[])
-    resp = main.tutor_stream_endpoint(req)
+    resp = main.tutor_stream_endpoint(req, code="P01")
 
     with caplog.at_level(logging.ERROR):
         body = "".join(_consume(resp))

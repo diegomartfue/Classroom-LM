@@ -130,9 +130,30 @@ def test_draw_streams_conversationalist():
     assert client.stream_calls[-1]["system"] is o.CONVERSATIONALIST_PROMPT
 
 
-def test_upstream_agent_failure_propagates_out_of_run_stream():
-    # When an upstream agent raises, run_stream must NOT swallow it (the FastAPI
-    # streaming endpoint is responsible for converting it to a safe SSE error).
+def test_upstream_agent_failure_is_caught_and_yields_a_friendly_error():
+    # Pilot hardening (item 3, "no dead ends"): run_stream() now catches a
+    # mid-stream failure itself, exactly like run() already does, so every
+    # exit path is logged and the student model is still saved — it does
+    # NOT propagate raw. main.py's own except block around agent.run_stream()
+    # is now a secondary safety net (still useful for anything raised
+    # outside the generator, e.g. in FastAPI's own request handling), not the
+    # only line of defense.
+    class Boom(RoutingClient):
+        def create(self, **kw):
+            if kw["system"] is o.STUDENT_MODELER_PROMPT:
+                raise RuntimeError("boom in student modeler")
+            return super().create(**kw)
+
+    agent = OrchestratorAgent()
+    agent.client = Boom("CREATE")
+    events = list(agent.run_stream("make a problem", [], {}, ""))
+    assert events[-2]["type"] == "error"
+    assert events[-1]["type"] == "done"
+
+
+def test_upstream_agent_failure_propagates_out_of_the_inner_event_generator():
+    # _run_stream_events() (the pipeline itself, pre-memory-wrapper) still
+    # raises raw — only the public run_stream() wrapper catches it.
     class Boom(RoutingClient):
         def create(self, **kw):
             if kw["system"] is o.STUDENT_MODELER_PROMPT:
@@ -142,4 +163,4 @@ def test_upstream_agent_failure_propagates_out_of_run_stream():
     agent = OrchestratorAgent()
     agent.client = Boom("CREATE")
     with pytest.raises(RuntimeError):
-        list(agent.run_stream("make a problem", [], {}, ""))
+        list(agent._run_stream_events("make a problem", [], {}, ""))

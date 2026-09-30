@@ -4,12 +4,31 @@ document_store.py — save uploaded course documents and read their text back.
 Owns three things and nothing else:
   1. validate + extract text from an upload
   2. keep an index of what has been stored
-  3. hand the text back when asked
+  3. hand the text back when asked — only to someone allowed to see it
 
-Storage layout (relative to the backend directory):
-    uploads/{doc_id}.txt     extracted plain text
-    uploads/{doc_id}{ext}    the original file, kept for reference
-    documents.json           the index
+Who sees what (enforced here, on the server — every public function takes
+the caller's participants.Identity):
+  - Professor uploads are shared course material: every participant can
+    list them, read them, and have the tutor use them.
+  - A participant's own uploads are private: only that participant can
+    list, read, delete, or have the tutor use them. Another participant
+    asking for one gets exactly the same "not found" as for an id that
+    never existed, so ids can't even be probed.
+
+Storage layout (relative to the backend directory), one folder per owner:
+    uploads/shared/index.json                 shared (professor) documents
+    uploads/shared/{doc_id}.txt | {doc_id}{ext}
+    uploads/participants/{code}/index.json    one participant's own uploads
+    uploads/participants/{code}/{doc_id}.txt | {doc_id}{ext}
+
+Original file names (which can identify a student, e.g. JaneSmith_HW3.pdf)
+are kept only in the owner's index, for display back to that owner. They
+are never put into a model prompt for a participant's own upload
+(get_context labels it "Your uploaded document N"), so the tutor can't
+repeat one into a saved conversation or the research export.
+
+Files from before this layout (flat uploads/ + documents.json) are not
+visible to anyone; see README "Uploads and privacy".
 
 Nothing here imports the orchestrator, and the orchestrator does not import
 this. LLM calls happen only for scanned PDFs and images, which have no text
@@ -19,6 +38,7 @@ to extract by ordinary means.
 import io
 import json
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from dotenv import load_dotenv
@@ -33,8 +53,16 @@ load_dotenv()
 # Anchored to the backend directory so it does not matter where uvicorn
 # was launched from.
 _BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
-_UPLOAD_DIR = os.path.join(_BACKEND_DIR, "uploads")
-_INDEX_PATH = os.path.join(_BACKEND_DIR, "documents.json")
+# Module attribute (not a constant baked into defaults) so tests can point
+# it at a temp folder.
+UPLOAD_ROOT = os.path.join(_BACKEND_DIR, "uploads")
+
+SHARED = "shared"
+PRIVATE = "private"
+
+# doc_ids are generated here (12 hex chars) and used in file paths, so an id
+# from a request must match exactly or it's treated as not found.
+_DOC_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 
 # Anything bigger than this is rejected outright.
 MAX_FILE_BYTES = 20 * 1024 * 1024          # 20 MB
@@ -62,35 +90,71 @@ class DocumentError(Exception):
     """Raised when an upload cannot be accepted. The message is user-facing."""
 
 
+class DocumentForbidden(DocumentError):
+    """The caller can see this document but may not change it (a participant
+    deleting shared course material)."""
+
+
 # ---------------------------------------------------------------------------
 # Index helpers
 # ---------------------------------------------------------------------------
 
-def _ensure_dirs() -> None:
-    os.makedirs(_UPLOAD_DIR, exist_ok=True)
+def _space_dir(scope: str, code: str | None = None) -> str:
+    if scope == SHARED:
+        return os.path.join(UPLOAD_ROOT, "shared")
+    # participants.normalize() already restricts codes to [A-Z0-9-]; checked
+    # again here because this becomes a directory name.
+    if not code or not re.fullmatch(r"[A-Z0-9-]{2,32}", code):
+        raise DocumentError("Invalid participant code.")
+    return os.path.join(UPLOAD_ROOT, "participants", code)
 
 
-def _load_index() -> list:
-    if not os.path.exists(_INDEX_PATH):
+def _load_index(space: str) -> list:
+    path = os.path.join(space, "index.json")
+    if not os.path.exists(path):
         return []
     try:
-        with open(_INDEX_PATH, "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
         return data if isinstance(data, list) else []
     except (json.JSONDecodeError, OSError):
         return []
 
 
-def _save_index(records: list) -> None:
-    _ensure_dirs()
-    tmp = f"{_INDEX_PATH}.tmp"
+def _save_index(space: str, records: list) -> None:
+    os.makedirs(space, exist_ok=True)
+    path = os.path.join(space, "index.json")
+    tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(records, fh, indent=2, ensure_ascii=False, default=str)
-    os.replace(tmp, _INDEX_PATH)
+    os.replace(tmp, path)
 
 
-def _text_path(doc_id: str) -> str:
-    return os.path.join(_UPLOAD_DIR, f"{doc_id}.txt")
+def _visible_spaces(identity) -> list[str]:
+    """Shared material first, then the caller's own folder. Nothing else
+    is ever searched, which is what keeps other participants' files out."""
+    spaces = [_space_dir(SHARED)]
+    if not identity.is_professor:
+        spaces.append(_space_dir(PRIVATE, identity.code))
+    return spaces
+
+
+def _find(doc_id: str, identity) -> tuple[str, dict]:
+    if isinstance(doc_id, str) and _DOC_ID_RE.match(doc_id):
+        for space in _visible_spaces(identity):
+            for record in _load_index(space):
+                if record.get("doc_id") == doc_id:
+                    return space, record
+    raise DocumentError(f"No document found with id '{doc_id}'.")
+
+
+def _public(record: dict, identity) -> dict:
+    """What the API returns about a document. The owner field never leaves
+    the server; the file name is shown because the caller is either the
+    owner (private) or looking at shared course material."""
+    out = {k: v for k, v in record.items() if k != "owner"}
+    out["mine"] = record.get("scope") == PRIVATE or identity.is_professor
+    return out
 
 
 def _safe_extension(filename: str) -> str:
@@ -289,9 +353,10 @@ def extract_text(filename: str, data: bytes) -> tuple:
 # Public API
 # ---------------------------------------------------------------------------
 
-def save_document(filename: str, data: bytes, course: str = "default") -> dict:
+def save_document(filename: str, data: bytes, identity, course: str = "default") -> dict:
     """
-    Validate, extract, and store one uploaded file.
+    Validate, extract, and store one uploaded file: shared course material
+    when a professor uploads it, private to the uploader otherwise.
     Raises DocumentError with a user-facing message on any rejection.
     """
     if not data:
@@ -311,19 +376,23 @@ def save_document(filename: str, data: bytes, course: str = "default") -> dict:
         text = text[:MAX_TEXT_CHARS]
         truncated = True
 
-    _ensure_dirs()
+    scope = SHARED if identity.is_professor else PRIVATE
+    space = _space_dir(scope, identity.code)
+    os.makedirs(space, exist_ok=True)
     doc_id = uuid.uuid4().hex[:12]
 
     # Stored filenames are built from doc_id, never from user input, so a
-    # crafted filename cannot escape the uploads directory.
-    with open(_text_path(doc_id), "w", encoding="utf-8") as fh:
+    # crafted filename cannot escape the owner's folder.
+    with open(os.path.join(space, f"{doc_id}.txt"), "w", encoding="utf-8") as fh:
         fh.write(text)
-    with open(os.path.join(_UPLOAD_DIR, f"{doc_id}{ext}"), "wb") as fh:
+    with open(os.path.join(space, f"{doc_id}{ext}"), "wb") as fh:
         fh.write(data)
 
     record = {
         "doc_id": doc_id,
         "filename": os.path.basename(filename),
+        "scope": scope,
+        "owner": identity.code,
         "course": course or "default",
         "extension": ext,
         "bytes": len(data),
@@ -334,58 +403,74 @@ def save_document(filename: str, data: bytes, course: str = "default") -> dict:
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    records = _load_index()
+    records = _load_index(space)
     records.append(record)
-    _save_index(records)
-    return record
+    _save_index(space, records)
+    return _public(record, identity)
 
 
-def list_documents(course: str | None = None) -> list:
-    """Return stored document records, newest first."""
-    records = _load_index()
+def list_documents(identity, course: str | None = None) -> list:
+    """Shared course material plus the caller's own uploads, newest first."""
+    records = [r for space in _visible_spaces(identity) for r in _load_index(space)]
     if course:
         records = [r for r in records if r.get("course") == course]
-    return sorted(records, key=lambda r: r.get("uploaded_at", ""), reverse=True)
+    records.sort(key=lambda r: r.get("uploaded_at", ""), reverse=True)
+    return [_public(r, identity) for r in records]
 
 
-def get_document(doc_id: str) -> dict:
-    """Return one record plus its full text. Raises DocumentError if missing."""
-    for record in _load_index():
-        if record.get("doc_id") == doc_id:
-            path = _text_path(doc_id)
-            if not os.path.exists(path):
-                raise DocumentError(
-                    f"The text for '{record.get('filename')}' is missing from disk."
-                )
-            with open(path, "r", encoding="utf-8") as fh:
-                return {**record, "text": fh.read()}
-    raise DocumentError(f"No document found with id '{doc_id}'.")
+def get_document(doc_id: str, identity) -> dict:
+    """One record plus its full text, if the caller may see it. Raises
+    DocumentError (not found) otherwise."""
+    space, record = _find(doc_id, identity)
+    path = os.path.join(space, f"{doc_id}.txt")
+    if not os.path.exists(path):
+        raise DocumentError(
+            f"The text for '{record.get('filename')}' is missing from disk."
+        )
+    with open(path, "r", encoding="utf-8") as fh:
+        return {**_public(record, identity), "text": fh.read()}
 
 
-def delete_document(doc_id: str) -> dict:
-    """Remove a document's files and its index entry."""
-    records = _load_index()
-    remaining = [r for r in records if r.get("doc_id") != doc_id]
-    if len(remaining) == len(records):
-        raise DocumentError(f"No document found with id '{doc_id}'.")
+def delete_document(doc_id: str, identity) -> dict:
+    """Remove a document the caller owns. Participants can't delete shared
+    course material; only a professor can."""
+    space, record = _find(doc_id, identity)
+    if record.get("scope") == SHARED and not identity.is_professor:
+        raise DocumentForbidden("Shared course material can only be removed by the professor.")
 
-    for record in records:
-        if record.get("doc_id") == doc_id:
-            for path in (_text_path(doc_id),
-                         os.path.join(_UPLOAD_DIR,
-                                      f"{doc_id}{record.get('extension', '')}")):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-
-    _save_index(remaining)
+    for path in (os.path.join(space, f"{doc_id}.txt"),
+                 os.path.join(space, f"{doc_id}{record.get('extension', '')}")):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    _save_index(space, [r for r in _load_index(space) if r.get("doc_id") != doc_id])
     return {"deleted": doc_id}
 
 
-def get_context(doc_ids: list) -> str:
+def visible_ids(doc_ids: list, identity) -> list:
+    """The subset of doc_ids the caller may see, in order. Lets the tutor
+    use the attachable ones even when a request also names something the
+    caller can't (stale id, or someone else's)."""
+    out = []
+    for doc_id in doc_ids or []:
+        try:
+            _find(doc_id, identity)
+        except DocumentError:
+            continue
+        out.append(doc_id)
+    return out
+
+
+def get_context(doc_ids: list, identity) -> str:
     """
-    Hand back the text to feed a model, for one or more documents.
+    Hand back the text to feed a model, for one or more documents the
+    caller may see (any other id raises DocumentError, same as missing).
+
+    Shared material is labelled with its file name. A participant's own
+    upload is labelled "Your uploaded document N" instead: its file name
+    may carry the student's name, and whatever is in the prompt can end up
+    in the tutor's reply, the saved conversation, and the research export.
 
     This is the seam. Today it returns whole documents. When the pile grows
     past what fits in a prompt, the retrieval strategy changes *inside this
@@ -394,11 +479,17 @@ def get_context(doc_ids: list) -> str:
     if not doc_ids:
         return ""
     blocks = []
+    own_count = 0
     for doc_id in doc_ids:
-        record = get_document(doc_id)
+        record = get_document(doc_id, identity)
+        if record.get("scope") == SHARED:
+            label = f"Course material: {record['filename']}"
+        else:
+            own_count += 1
+            label = f"Your uploaded document {own_count}"
         blocks.append(
-            f"--- BEGIN DOCUMENT: {record['filename']} ---\n"
+            f"--- BEGIN DOCUMENT: {label} ---\n"
             f"{record['text']}\n"
-            f"--- END DOCUMENT: {record['filename']} ---"
+            f"--- END DOCUMENT: {label} ---"
         )
     return "\n\n".join(blocks)

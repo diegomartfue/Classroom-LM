@@ -24,9 +24,19 @@ import base64
 import uuid
 from datetime import datetime, timezone
 from .memory import SessionMemory
+from .misconceptions import known_misconceptions_block, remediation_for
+from . import solution_cache
 from .svg_layout import fix_label_collisions
 from dotenv import load_dotenv
 from model_config import SONNET_MODEL, HAIKU_MODEL, OPUS_MODEL, VISUALIZER_MODEL
+from utils.usage_tracker import DailyLimitReached, DailyUsageTracker, UsageTrackingClient
+
+# Shown to the student instead of ever reaching the API once the daily
+# spending limit (item 2 of the pilot hardening pass) is hit.
+DAILY_LIMIT_MESSAGE = (
+    "The tutor is resting for today — we've hit today's usage limit. "
+    "Please come back tomorrow and we'll pick up right where you left off!"
+)
 from response_utils import extract_text
 
 load_dotenv()
@@ -213,8 +223,22 @@ Energy / momentum:
 Conceptual:
 - statics_dynamics_confusion: assuming a = 0 when the body is accelerating
 - frame_confusion: mixing reference frames or adding fictitious forces incorrectly
+"""
 
-Return ONLY the JSON. No prose."""
+# The hand-written list above is dynamics-focused (F=ma, kinematics,
+# energy/momentum) and never covered statics (planar equilibrium,
+# ΣF=0/ΣM=0), which is explicitly in scope per CLAUDE.md's MVP.
+# docs/misconceptions.md catalogs exactly that — FBD construction,
+# equilibrium equations, reference point choice, distributed loads — and was
+# previously unused anywhere in the pipeline. Appended here (not
+# hand-duplicated) so the doc file stays the single source of truth for
+# those categories; known_misconceptions_block() returns "" if the doc is
+# missing/unparseable, so a broken doc file just leaves the prompt as
+# written above rather than breaking detection.
+STUDENT_MODELER_PROMPT = (
+    STUDENT_MODELER_PROMPT + known_misconceptions_block()
+    + "\n\nReturn ONLY the JSON. No prose."
+)
 
 PEDAGOGICAL_PLANNER_PROMPT = """You decide what the tutor should do next. You are the pedagogical judgment of the system. Your goal is LEARNING, not problem completion.
 
@@ -236,8 +260,11 @@ OUTPUT: Strict JSON:
   "rationale": "1-2 sentences of pedagogical reasoning",
   "payload": {
     // For HINT: {"hint_text": "...", "hint_level": 1-3, "hint_stage": "fbd"|"equations"|"method"|"solving"}
+    //   (hint_level 3 from the Hint button may also carry "worked_step": {"symbol", "value", "unit", "description", "equation"} — one intermediate step, computed by the solver, to be carried out with numbers)
     // For ASK: {"question": "...", "target_concept": "..."}
-    // For SOLVE: {"permission_source": "student_requested" | "repeated_failure" | "review_mode"}
+    // For SOLVE: {"permission_source": "student_requested" | "repeated_failure" | "review_mode" | "hint_ladder_exhausted"}
+    // ("hint_ladder_exhausted" is set deterministically by the Hint button's
+    // own level-4 tap, in code — not something you need to produce yourself.)
     // For WAIT: {"wait_reason": "student_thinking" | "student_working"}
     // For CLARIFY: {"clarification_needed": "..."}
   },
@@ -299,8 +326,14 @@ OUTPUT: Strict JSON:
     {"symbol": "a", "value": 4.15, "unit": "m/s^2", "description": "acceleration down the incline"},
     {"symbol": "N", "value": 106.7, "unit": "N", "description": "normal force from incline"}
   ],
+  "intermediate_values": [
+    {"symbol": "W", "value": 117.7, "unit": "N", "description": "weight, m*g"},
+    {"symbol": "f_k", "value": 21.3, "unit": "N", "description": "kinetic friction, mu_k*N"}
+  ],
   "sanity_notes": ["a < g, expected on an incline", "N < mg, expected on an incline"]
 }
+
+INTERMEDIATE VALUES: list every numeric quantity you computed on the way that is not already in final_answers or the givens — forces (normal force, friction, weight or its components, tension), components, times, etc. Use the conventional short symbol (N, f_k, W, T, F_x, v_0, t). Students check their own work line by line against these, so every force you compute must appear here with its value.
 
 METHOD BY FAMILY:
 
@@ -410,6 +443,10 @@ LAYOUT PROCESS (plan all coordinates before emitting any SVG)
    support symbol, and place force labels at their arrow tips, away from the
    support.
 9. Draw all text last so it paints on top.
+10. Position every <text> with plain x/y and its own font-size attribute. Never
+   put a transform (rotate, translate, scale) on a <text> or on a group
+   containing text, and never place a label inside a filled shape such as the
+   incline — keep it in open space at least 8px from every edge and arc.
 
 CONTENT — FORCE / FREE-BODY-DIAGRAM PROBLEMS
 Only draw arrows for forces acting on the body. Constants such as g belong in
@@ -498,6 +535,11 @@ INPUTS EACH TURN:
 - The Planner's decision: one of {SOLVE, HINT, ASK, WAIT, CLARIFY}
 - The content the Planner wants conveyed
 - The current student model summary (brief)
+- Sometimes "misconception_guidance": one sentence on how to address the
+  specific misconception the Planner targeted this turn. When present, weave
+  it into your ASK/HINT naturally — don't quote it verbatim or announce "the
+  system detected a misconception"; just let it ground and sharpen what you
+  already say.
 
 YOUR OUTPUT: A natural-language response to the student. Nothing else — no meta-commentary, no agent tags, no "as an AI".
 
@@ -510,6 +552,7 @@ TONE:
 
 HARD RULES:
 - HINT: do NOT give the answer. Give only the hint provided.
+- HINT with payload.worked_step: carry out exactly that ONE step for the student, with the numbers: write the equation, substitute the values, and state the result it gives (e.g. "N = m*g*cos(30) = 10*9.81*cos(30) = 84.96 N"). Then ask the student to take the next step themselves. Do NOT compute anything beyond that step, and do NOT state or hint at any final answer.
 - ASK: ask the question and STOP. Do not volunteer more.
 - WAIT: acknowledge and give space. Very short.
 - Never invent physics content. If the Planner didn't provide it, don't add it.
@@ -654,7 +697,16 @@ class OrchestratorAgent:
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY is not set")
-        self.client = anthropic.Anthropic(api_key=api_key)
+        # Every agent method below calls self.client.messages.create/stream —
+        # wrapping it here is the one place real per-call token usage (item 2
+        # of the pilot hardening pass) is logged and the daily spending limit
+        # enforced, without touching any individual agent method. Tests
+        # replace self.client wholesale with a fake AFTER construction, so
+        # this wrapper is never in the way of a mocked test.
+        self.usage_tracker = DailyUsageTracker()
+        self.client = UsageTrackingClient(
+            anthropic.Anthropic(api_key=api_key), self.usage_tracker
+        )
         self.memory = SessionMemory()
 
     # -----------------------------------------------------------------------
@@ -947,6 +999,15 @@ class OrchestratorAgent:
             "validation": validation,
             "visualization": visualization,
         }
+        # If the Planner targeted a specific misconception, give the
+        # Conversationalist ONE short, grounded remediation snippet from
+        # docs/misconceptions.md instead of it improvising an explanation
+        # from a bare id string. Omitted entirely (not an empty key) when
+        # there's no target or no matching entry, so a normal turn's context
+        # bundle is unchanged from before this item.
+        guidance = remediation_for(plan.get("target_misconception") if plan else None)
+        if guidance:
+            context_bundle["misconception_guidance"] = guidance
         convo = _conversation_block(conversation_history or [])
         user_content = f"{convo}Context bundle:\n{json.dumps(context_bundle, indent=2)}"
         response = self.client.messages.create(
@@ -961,10 +1022,25 @@ class OrchestratorAgent:
     # Main pipeline
     # -----------------------------------------------------------------------
 
-
+    def _load_student_model_if_empty(self, student_model: dict, student_id: str) -> dict:
+        """Pilot item 4 — "the tutor remembers you": on a fresh session the
+        frontend always starts studentModel at {}, so an empty incoming
+        model means load whatever was saved for this student last time.
+        A non-empty incoming model (mid-conversation, already loaded once)
+        is trusted as-is — never overwritten mid-session. A failed load
+        falls back to {} (get_student_model already guarantees that, see
+        agents/memory.py) rather than raising."""
+        if student_model:
+            return student_model
+        try:
+            loaded = self.memory.get_student_model(student_id)
+        except Exception:
+            return {}
+        return loaded or {}
 
     def run(self, message: str, conversation_history: list, student_model: dict,
-            session_id: str | None = None, student_id: str | None = None) -> dict:
+            session_id: str | None = None, student_id: str | None = None,
+            hint_level: int | None = None) -> dict:
         """
         Orchestrate one tutoring turn with file-based session memory.
 
@@ -973,9 +1049,14 @@ class OrchestratorAgent:
         ``low_confidence=True``. Each agent's output is logged under
         ``traces/{session_id}/`` and the student model is persisted to
         ``state/{student_id}.json`` at the end of every turn.
+
+        hint_level (pilot item 7): when set (1-4), this is an explicit
+        Hint-button tap, not a message needing the Router/Planner's own
+        judgment — see _run_turn for how it's handled deterministically.
         """
         session_id = session_id or _new_session_id()
         student_id = student_id or "default"
+        student_model = self._load_student_model_if_empty(student_model, student_id)
         turn_number = sum(1 for m in conversation_history if m.get("role") == "user")
 
         try:
@@ -986,8 +1067,25 @@ class OrchestratorAgent:
         try:
             result = self._run_turn(
                 message, conversation_history, student_model,
-                session_id, student_id, turn_number,
+                session_id, student_id, turn_number, hint_level=hint_level,
             )
+        except DailyLimitReached:
+            # Caught specifically, before the generic handler below, so the
+            # student sees the friendly "resting" message rather than the
+            # generic "unexpected problem" one — no API call was made.
+            result = {
+                "response": DAILY_LIMIT_MESSAGE,
+                "updated_student_model": student_model,
+                "plan": {"decision": "RESTING"},
+                "solution": None,
+                "validation": None,
+                "visualization": None,
+                "diagram_image": "",
+                "parsed_input": None,
+                "route": "PROBLEM",
+                "route_decision": None,
+                "low_confidence": False,
+            }
         except Exception as exc:  # never propagate an error to the student
             try:
                 self.memory.log_error(
@@ -1032,7 +1130,8 @@ class OrchestratorAgent:
         return result
 
     def _run_turn(self, message: str, conversation_history: list, student_model: dict,
-                  session_id: str, student_id: str, turn_number: int) -> dict:
+                  session_id: str, student_id: str, turn_number: int,
+                  hint_level: int | None = None) -> dict:
         """
         Router-as-orchestrator. The Router classifies the message, then the MCO
         dispatches one of five route-specific agent pipelines. Every agent's
@@ -1050,8 +1149,15 @@ class OrchestratorAgent:
                               -> Validator[retry] -> Conversationalist
           CONCEPT/SMALLTALK   Direct Tutor (single agent)
           OUT_OF_SCOPE        Direct Tutor (explains the scope limitation)
+
+        hint_level (pilot item 7): an explicit Hint-button tap. This is
+        known structurally, not something the Router needs to (or reliably
+        could) infer from message text, so it forces route=PROBLEM and skips
+        the Router call outright — one fewer API call, and no risk of the
+        Router misclassifying a plain "can I get a hint?"-style message.
         """
-        turn_record: dict = {"message": message, "agents": {}}
+        turn_record: dict = {"participant_code": student_id, "message": message,
+                             "hint_level": hint_level, "agents": {}}
 
         def _log(agent_name: str, output) -> None:
             # Accumulate into a single {turn}.json, rewritten after each agent.
@@ -1063,7 +1169,14 @@ class OrchestratorAgent:
 
         # 0. Router classifies the message. Log the route decision to memory
         #    BEFORE the MCO dispatches to any downstream pipeline.
-        route_decision = self.router(message, conversation_history)
+        if hint_level is not None:
+            route_decision = {
+                "route": "PROBLEM",
+                "rationale": "Hint ladder button — route forced, Router not called.",
+                "confidence": 1.0,
+            }
+        else:
+            route_decision = self.router(message, conversation_history)
         route = route_decision.get("route", "PROBLEM")
         turn_record["route"] = route
         _log("router", route_decision)
@@ -1089,6 +1202,21 @@ class OrchestratorAgent:
         # ---------- DRAW: Input Parser -> Visualizer (SVG)
         #            -> Conversationalist ----------
         if route == "DRAW":
+            if _draw_needs_clarification(route_decision, conversation_history):
+                _log("draw_clarify", {"response": DRAW_NEEDS_CLARIFICATION_MESSAGE})
+                return {
+                    "response": DRAW_NEEDS_CLARIFICATION_MESSAGE,
+                    "updated_student_model": student_model,
+                    "plan": {"decision": "CLARIFY"},
+                    "solution": None,
+                    "validation": None,
+                    "visualization": None,
+                    "diagram_image": "",
+                    "parsed_input": None,
+                    "route": route,
+                    "route_decision": route_decision,
+                    "low_confidence": False,
+                }
             parsed_input = self.input_parser(
                 message, _draw_history(route_decision, conversation_history)
             )
@@ -1260,7 +1388,12 @@ class OrchestratorAgent:
         )
         _log("student_modeler", updated_student_model)
 
-        plan = self.pedagogical_planner(parsed_input, updated_student_model, conversation_history, raw_message=message)
+        if hint_level is not None:
+            plan = _hint_ladder_plan(hint_level, parsed_input)
+            if hint_level == 3:
+                plan = self._with_worked_step(plan, parsed_input)
+        else:
+            plan = self.pedagogical_planner(parsed_input, updated_student_model, conversation_history, raw_message=message)
         _log("pedagogical_planner", plan)
 
         solution = None
@@ -1305,6 +1438,48 @@ class OrchestratorAgent:
             "low_confidence": low_confidence,
         }
 
+    def solution_for_work_check(self, parsed_input: dict) -> dict | None:
+        """Solver answers for /check-work (pilot item 9). Reuses the
+        solution a SOLVE turn already cached for this exact problem; only
+        otherwise spends one solver + one validator call, and caches the
+        result so later checks of the same problem are free. A solution
+        that fails validation is not used — a wrong reference answer would
+        mark a student's correct line wrong."""
+        cached = solution_cache.get(parsed_input)
+        if cached is not None:
+            return cached
+        solution = self.solver(parsed_input)
+        validation = self.validator(parsed_input, solution)
+        if _verdict(validation) == "FAIL":
+            return None
+        solution_cache.remember(parsed_input, solution)
+        return solution_cache.get(parsed_input)
+
+    def _with_worked_step(self, plan: dict, parsed_input: dict) -> dict:
+        """Hint level 3 ("one worked step"): attach one intermediate step,
+        with its value, for the conversationalist to carry out. The solution
+        comes from the cache when a SOLVE or /check-work already produced it,
+        otherwise from one solver + validator call (cached for later). Only
+        the chosen step reaches the conversationalist — never the solution
+        or its final answers. Any failure (validation FAIL, solver error, no
+        usable step) leaves the plain level-3 text hint in place."""
+        try:
+            solution = solution_cache.get(parsed_input)
+            if solution is None:
+                solution = self.solver(parsed_input)
+                if _verdict(self.validator(parsed_input, solution)) == "FAIL":
+                    return plan
+                solution_cache.remember(parsed_input, solution)
+        except DailyLimitReached:
+            raise
+        except Exception:
+            logger.warning("worked step: solver unavailable; using the text hint", exc_info=True)
+            return plan
+        step = _pick_worked_step(solution)
+        if step is None:
+            return plan
+        return {**plan, "payload": {**plan.get("payload", {}), "worked_step": step}}
+
     # Retry the Solver at most this many times when the Validator returns FAIL.
     MAX_SOLVER_ATTEMPTS = 3
 
@@ -1330,6 +1505,7 @@ class OrchestratorAgent:
                        or validation.get("solver_verdict")
                        or "UNCERTAIN")
             if verdict != "FAIL":
+                solution_cache.remember(parsed_input, solution)
                 return solution, validation, False
 
             errors = validation.get("errors_found", [])
@@ -1364,15 +1540,122 @@ class OrchestratorAgent:
         return solution, validation, True
 
     def run_stream(self, message: str, conversation_history: list, student_model: dict,
-                   source_text: str = ""):
-        """Streaming variant of run(). Generator yielding event dicts:
+                   source_text: str = "", session_id: str | None = None,
+                   student_id: str | None = None, hint_level: int | None = None):
+        """Streaming variant of run() — with the same server-side memory
+        guarantee as run(): every turn logged, the student model saved.
+
+        hint_level (pilot item 7): an explicit Hint-button tap — see
+        _run_stream_events for how it's handled deterministically.
+
+        Thin wrapper around _run_stream_events(): forwards every event
+        untouched while watching the stream for the pieces run() logs
+        per-agent via _log() — the final student_model (from whichever
+        "meta" event carries it), route/decision, and the streamed response
+        text. _run_stream_events() itself never touches self.memory, so this
+        is the ONE place a streamed turn is journaled; unlike run()'s
+        _run_turn(), which re-logs a growing turn_record after every agent,
+        this logs a single consolidated record once the turn ends (normally
+        or via a caught exception) — coarser than run()'s per-agent trace,
+        but every turn is still captured and the student model is still
+        saved, which is what matters for research data. See docs/pilot-plan.md.
+        """
+        session_id = session_id or _new_session_id()
+        student_id = student_id or "default"
+        student_model = self._load_student_model_if_empty(student_model, student_id)
+        turn_number = sum(1 for m in conversation_history if m.get("role") == "user")
+
+        try:
+            self.memory.create_session(session_id)
+        except Exception:
+            pass
+
+        final_student_model = student_model
+        route = None
+        decision = None
+        diagram_svg = ""
+        response_parts: list[str] = []
+        error_text: str | None = None
+
+        try:
+            for event in self._run_stream_events(
+                message, conversation_history, student_model, source_text,
+                hint_level=hint_level,
+            ):
+                etype = event.get("type")
+                if etype == "meta":
+                    final_student_model = event.get("student_model", final_student_model)
+                    route = event.get("route", route)
+                    decision = event.get("decision", decision)
+                    diagram_svg = event.get("diagram_svg", diagram_svg)
+                elif etype == "token":
+                    response_parts.append(event.get("text", ""))
+                elif etype == "error":
+                    error_text = event.get("text")
+                yield event
+        except DailyLimitReached:
+            # Not an error — a normal-looking reply (meta + token + done),
+            # same shape as any other successful turn, so the frontend needs
+            # no special case for it. No API call was made this turn.
+            decision = "RESTING"
+            response_parts = [DAILY_LIMIT_MESSAGE]
+            yield {"type": "meta", "student_model": final_student_model,
+                   "route": route or "PROBLEM", "decision": "RESTING", "diagram_svg": ""}
+            yield {"type": "token", "text": DAILY_LIMIT_MESSAGE}
+            yield {"type": "done"}
+        except Exception as exc:  # never propagate an error to the student
+            try:
+                self.memory.log_error(
+                    session_id,
+                    error=f"unhandled run_stream exception: {exc!r}",
+                    fix_attempted="none",
+                    success=False,
+                )
+            except Exception:
+                pass
+            error_text = (
+                "I ran into an unexpected problem working through that. "
+                "Could you rephrase it or add a bit more detail?"
+            )
+            yield {"type": "error", "text": error_text}
+            yield {"type": "done"}
+        finally:
+            try:
+                # participant_code is the only identity saved: the pilot's
+                # anonymous code, never a name (see participants.py).
+                self.memory.log_turn(session_id, turn_number, {
+                    "participant_code": student_id,
+                    "student_message": message,
+                    "hint_level": hint_level,
+                    "route": route,
+                    "decision": decision,
+                    "response_text": "".join(response_parts),
+                    "diagram_rendered": bool(diagram_svg),
+                    "error": error_text,
+                })
+            except Exception:
+                pass
+            try:
+                self.memory.save_student_model(student_id, final_student_model)
+            except Exception:
+                pass
+
+    def _run_stream_events(self, message: str, conversation_history: list, student_model: dict,
+                   source_text: str = "", hint_level: int | None = None):
+        """Streaming variant of run()'s pipeline. Generator yielding event dicts:
             {"type":"status","text":...}  progress during the silent pipeline phase
             {"type":"meta", ...}          one-shot: student_model, route, decision, diagram_image
             {"type":"token","text":...}   incremental text of the final agent
             {"type":"done"}
         Only the FINAL agent is streamed; upstream agents return JSON we need whole,
         so we emit status lines while they run. NOTE: mirrors run()'s control flow —
-        keep the two in sync until we refactor the shared part out (tech debt)."""
+        keep the two in sync until we refactor the shared part out (tech debt).
+        Never touches self.memory directly — run_stream() (the public wrapper
+        above) is the one place a streamed turn is journaled.
+
+        hint_level (pilot item 7): an explicit Hint-button tap, forces
+        route=PROBLEM and skips the Router call — see _run_turn for the
+        matching (non-streaming) logic and full rationale."""
         # Text from documents the student attached to this turn. When empty,
         # source_block is "" and every path below is unchanged.
         source_block = ""
@@ -1383,12 +1666,21 @@ class OrchestratorAgent:
                 "Prefer its notation, methods, and worked examples over your own. "
                 "If it conflicts with what you would otherwise say, follow the "
                 "documents and say so. Content grounded in these documents is not "
-                "invented content — you may use it freely.\n"
+                "invented content — you may use it freely. Never repeat a "
+                "person's name or other personal details that appear in these "
+                "documents: conversations are saved for research.\n"
                 f"{source_text}\n"
                 "[END COURSE DOCUMENTS]"
             )
 
-        route_decision = self.router(message, conversation_history)
+        if hint_level is not None:
+            route_decision = {
+                "route": "PROBLEM",
+                "rationale": "Hint ladder button — route forced, Router not called.",
+                "confidence": 1.0,
+            }
+        else:
+            route_decision = self.router(message, conversation_history)
         route = route_decision.get("route", "PROBLEM")
 
         # Labeled prior-conversation block, injected into the FINAL response
@@ -1424,6 +1716,13 @@ class OrchestratorAgent:
                             "unsolved so you can work them yourself. Notice the forces on each.")}
                     yield {"type": "done"}
                     return
+
+            if _draw_needs_clarification(route_decision, conversation_history):
+                yield {"type": "meta", "student_model": student_model, "route": route,
+                       "decision": "CLARIFY", "diagram_svg": ""}
+                yield {"type": "token", "text": DRAW_NEEDS_CLARIFICATION_MESSAGE}
+                yield {"type": "done"}
+                return
 
             # Single-diagram DRAW mirrors run(): Input Parser -> Visualizer (SVG)
             # -> Conversationalist. The visualizer draws SVG directly.
@@ -1567,9 +1866,15 @@ class OrchestratorAgent:
         updated_student_model = self._student_modeler_safe(
             parsed_input, student_model, conversation_history, fallback=student_model
         )
-        plan = self.pedagogical_planner(parsed_input, updated_student_model,
-                                        conversation_history,
-                                        raw_message=message + source_block)
+        if hint_level is not None:
+            plan = _hint_ladder_plan(hint_level, parsed_input)
+            if hint_level == 3:
+                yield {"type": "status", "text": "Working out one step\u2026"}
+                plan = self._with_worked_step(plan, parsed_input)
+        else:
+            plan = self.pedagogical_planner(parsed_input, updated_student_model,
+                                            conversation_history,
+                                            raw_message=message + source_block)
 
         solution = validation = visualization = None
         diagram_svg = ""
@@ -1579,14 +1884,21 @@ class OrchestratorAgent:
             solution = self.solver(parsed_input)
             yield {"type": "status", "text": "Verifying the physics\u2026"}
             validation = self.validator(parsed_input, solution)
+            if _verdict(validation) != "FAIL":
+                solution_cache.remember(parsed_input, solution)
             yield {"type": "status", "text": "Drawing the diagram\u2026"}
             visualization = self.visualizer(parsed_input, solution)
             svg_ok = _svg_is_valid(visualization)
             diagram_svg = visualization if svg_ok else ""
 
-        # meta BEFORE tokens so the frontend can attach diagram + student_model first
+        # meta BEFORE tokens so the frontend can attach diagram + student_model first.
+        # parsed_input/solution are handed back verbatim (item 9's check-work feature
+        # needs them to build known_values without any new LLM call — see
+        # agents/work_checker.build_known_values) — no new agent call, this is the
+        # same data already computed a few lines above for this exact turn.
         yield {"type": "meta", "student_model": updated_student_model, "route": route,
-            "decision": plan.get("decision", "UNKNOWN"), "diagram_svg": diagram_svg}
+            "decision": plan.get("decision", "UNKNOWN"), "diagram_svg": diagram_svg,
+            "parsed_input": parsed_input, "solution": solution}
 
         context_bundle = {
             "student_message": message, "parsed_input": parsed_input,
@@ -1716,6 +2028,26 @@ def _draw_history(route_decision: dict, conversation_history: list) -> list:
     return conversation_history or []
 
 
+# Pilot item 8 — a referential DRAW request ("draw that", "same thing") with
+# NO prior conversation at all has nothing to refer to; input_parser would
+# still be handed empty history and the Visualizer would draw *something*,
+# necessarily invented. Asking which problem the student means is safer than
+# guessing. Deliberately scoped to the cheap, unambiguous case (no history at
+# all, e.g. a fresh session) rather than trying to detect "history exists but
+# never actually contained a real problem" — that's a fuzzier judgment call
+# this deterministic check doesn't attempt.
+DRAW_NEEDS_CLARIFICATION_MESSAGE = (
+    "Which problem would you like me to draw? I don't have an earlier one in "
+    "this conversation to work from — describe it (or paste it again) and "
+    "I'll sketch it."
+)
+
+
+def _draw_needs_clarification(route_decision: dict, conversation_history: list) -> bool:
+    scope = (route_decision or {}).get("problem_scope")
+    return scope == "referential" and not conversation_history
+
+
 def _format_history(conversation_history: list,
                     max_messages: int = MAX_HISTORY_MESSAGES) -> str:
     """Central formatter for conversation history. Includes only the most
@@ -1776,6 +2108,14 @@ def _render_created_problems(created: dict) -> str:
 _SVG_RE = re.compile(r"<svg[\s\S]*?</svg>", re.IGNORECASE)
 
 
+def _verdict(validation) -> str:
+    if not isinstance(validation, dict):
+        return "UNCERTAIN"
+    return (validation.get("overall_verdict")
+            or validation.get("solver_verdict")
+            or "UNCERTAIN")
+
+
 def _svg_is_valid(svg: str) -> bool:
     """True if the string looks like a non-empty, well-formed SVG document.
 
@@ -1792,6 +2132,115 @@ def _diagram_status(svg_ok: bool) -> dict:
     so its reply can't echo the diagram code (and burn its max_tokens budget
     on it). It only needs to know whether a diagram was rendered."""
     return {"diagram_rendered": bool(svg_ok)}
+
+
+# --- Hint ladder (pilot item 7) ---------------------------------------------
+# A deliberately simple, linear 3-level ladder per family, distinct from
+# PEDAGOGICAL_PLANNER_PROMPT's own richer stage-aware ladder (FBD L1/L2,
+# Equations L1/L2, Solving L3) that the LLM planner draws on for its own
+# organic HINT decisions. The Hint button needs a plain level 1/2/3 to
+# increment through per tap, so this is its own compact, deterministic copy
+# rather than trying to force a single number onto the multi-stage prompt
+# ladder. Level 4 ("the answer") isn't a hint at all — it routes through the
+# existing SOLVE path instead (see _run_turn / _run_stream_events).
+_HINT_LADDER: dict[str, list[str]] = {
+    "kinetics": [
+        "Have you drawn the free-body diagram? What forces act on the body?",
+        "On a surface, don't forget the normal force; on an incline, resolve weight "
+        "into components along and perpendicular to the surface. Then write "
+        "ΣF = ma along each axis you chose.",
+        "Worked step: set up ΣF = ma along your chosen axes, substitute the "
+        "givens, and solve the one equation that has only a single unknown.",
+    ],
+    "kinematics": [
+        "Is the acceleration constant here? That decides which equations are valid.",
+        "If this is a projectile, treat horizontal and vertical motion separately: "
+        "a_x = 0, a_y = -g, and they share only time.",
+        "Worked step: pick the constant-acceleration equation that links the "
+        "quantities you know to the one you want, and substitute in the givens.",
+    ],
+    "energy_momentum": [
+        "What's conserved here — energy, momentum, both, or neither? Does "
+        "friction do work? Is there an external impulse?",
+        "Set up the conservation equation for this case (KE_i + PE_i + W_nc = "
+        "KE_f + PE_f for energy, or momentum before = momentum after per "
+        "direction) and identify each term.",
+        "Worked step: substitute the known values into the conservation equation "
+        "and isolate the unknown.",
+    ],
+}
+_HINT_STAGES = ["fbd", "equations", "solving"]
+_DEFAULT_HINT_FAMILY = "kinetics"  # fallback for "unclear"/unrecognized families
+
+
+def _hint_for_level(family: str, level: int) -> tuple[str, str]:
+    """(hint_text, hint_stage) for a 1-3 hint_level, matching
+    PEDAGOGICAL_PLANNER_PROMPT's payload.hint_stage vocabulary."""
+    ladder = _HINT_LADDER.get(family, _HINT_LADDER[_DEFAULT_HINT_FAMILY])
+    idx = min(max(level, 1), 3) - 1
+    return ladder[idx], _HINT_STAGES[idx]
+
+
+def _pick_worked_step(solution) -> dict | None:
+    """The first intermediate value that isn't itself a final answer (e.g.
+    the normal force when the question asks for acceleration), plus the
+    solver's equation for it when one is written as "<symbol> = ...".
+    None when every computed value is a final answer — then there's no
+    step to show that wouldn't give the answer away."""
+    if not isinstance(solution, dict):
+        return None
+    finals = {a.get("symbol") for a in solution.get("final_answers") or [] if isinstance(a, dict)}
+    for item in solution.get("intermediate_values") or []:
+        if not isinstance(item, dict) or item.get("symbol") in finals:
+            continue
+        symbol = item.get("symbol")
+        try:
+            value = float(item.get("value"))
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(symbol, str) or not symbol:
+            continue
+        equation = None
+        for eq in solution.get("equations") or []:
+            if not isinstance(eq, dict):
+                continue
+            for form in (eq.get("numeric"), eq.get("symbolic")):
+                if isinstance(form, str) and re.match(rf"\s*{re.escape(symbol)}\s*=", form):
+                    equation = eq.get("symbolic") or form
+                    break
+            if equation:
+                break
+        return {"symbol": symbol, "value": round(value, 4), "unit": item.get("unit") or "",
+                "description": item.get("description") or "", "equation": equation}
+    return None
+
+
+def _hint_ladder_plan(hint_level: int, parsed_input: dict) -> dict:
+    """The Pedagogical Planner's JSON shape, built deterministically instead
+    of by the LLM, for an explicit Hint-button tap. Levels 1-3 use the ladder
+    above; level 4 ("the answer") is the one place this pilot's hardening
+    pass deliberately overrides CONVERSATIONALIST_PROMPT's "HINT: do NOT
+    give the answer" rule — by never producing a HINT decision at level 4 at
+    all. It's SOLVE, with its own explicit permission_source, so the answer
+    flows through the SAME solve-verify-present path (and the same
+    VERIFICATION HONESTY rule) an organically-requested solve already does.
+    This is what replaces the old behavior of the tutor simply refusing to
+    ever give a value after several stuck turns."""
+    if hint_level >= 4:
+        return {
+            "decision": "SOLVE",
+            "rationale": "Student worked through the hint ladder (levels 1-3) and asked for the answer.",
+            "payload": {"permission_source": "hint_ladder_exhausted"},
+            "target_misconception": None,
+        }
+    family = (parsed_input or {}).get("family") or _DEFAULT_HINT_FAMILY
+    hint_text, hint_stage = _hint_for_level(family, hint_level)
+    return {
+        "decision": "HINT",
+        "rationale": f"Hint ladder level {hint_level} (student-requested via the Hint button).",
+        "payload": {"hint_text": hint_text, "hint_level": hint_level, "hint_stage": hint_stage},
+        "target_misconception": None,
+    }
 
 
 def _extract_json_object(text: str) -> str | None:

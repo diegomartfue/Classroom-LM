@@ -87,7 +87,7 @@ See docs/architecture.md for details.
 - /docs/ - architecture.md and misconceptions.md
 
 ## Running evals
-`python -m evals.run --suite projectile_v1`
+`python -m evals.run` (mocked, zero API calls). `--mode live` prints a cost estimate and needs `--yes` to make real calls. Cases live in `evals/pilot_cases.py`.
 
 ## Conventions
 - All prompts live in /agents/{name}/prompt.md (version controlled)
