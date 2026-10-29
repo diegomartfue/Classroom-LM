@@ -98,7 +98,8 @@ class ScopedDrawClient:
             return json.dumps(payload)
         if system is o.INPUT_PARSER_PROMPT:
             self.input_parser_calls.append(user_content)
-            return json.dumps({"body_description": "block on incline", "is_in_scope": True})
+            return json.dumps({"body_description": "block on incline", "is_in_scope": True,
+                               "scenario": {"bodies": [{"label": "A", "kind": "particle"}]}})
         if system is o.VISUALIZER_PROMPT:
             return VALID_SVG
         if system is o.CONVERSATIONALIST_PROMPT:

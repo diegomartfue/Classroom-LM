@@ -126,6 +126,9 @@ def load_turns(traces_dir: Path, since: date | None) -> tuple[list[dict], int]:
             # SVG was recorded have diagram_rendered but no diagram_svg.
             "diagram_rendered": bool(data.get("diagram_rendered")),
             "diagram_svg": data.get("diagram_svg") or "",
+            # Why a diagram was or wasn't sent; absent on older turns.
+            "diagram_status": data.get("diagram_status"),
+            "problem_scope": data.get("problem_scope"),
         })
     turns.sort(key=lambda t: (t["participant_code"], t["session_id"], t["turn_number"]))
     return turns, skipped
@@ -221,7 +224,7 @@ def _csv_safe(value) -> str:
 
 # Turn fields used by the HTML transcripts but kept out of the CSV and JSON,
 # so those two files stay exactly as they were.
-_TRANSCRIPT_ONLY = ("diagram_rendered", "diagram_svg")
+_TRANSCRIPT_ONLY = ("diagram_rendered", "diagram_svg", "diagram_status", "problem_scope")
 
 
 def _utc_stamp() -> str:
@@ -357,6 +360,15 @@ def _check_html(check: dict) -> str:
             f'<ul>{"".join(items)}</ul></div>')
 
 
+# A DRAW/SOLVE turn that tried to draw but sent nothing, in reviewer words.
+_NO_DIAGRAM_REASONS = {
+    "parse_failed": "the request could not be parsed",
+    "skipped_no_bodies": "no problem setup was found to draw",
+    "suppressed_placeholder": "the drawing was a placeholder, so it was withheld",
+    "visualizer_failed": "the drawing step failed",
+}
+
+
 def _turn_html(t: dict) -> str:
     meta = [f"<span>Turn {_esc(t['turn_number'])}</span>",
             f"<span>{_esc(_fmt_ts(t['timestamp']))}</span>"]
@@ -370,6 +382,9 @@ def _turn_html(t: dict) -> str:
         diagram = f'<div class="diagram">{_svg_img(t["diagram_svg"])}</div>'
     elif t.get("diagram_rendered"):
         diagram = '<div class="note">(diagram shown, not saved)</div>'
+    elif t.get("diagram_status") in _NO_DIAGRAM_REASONS:
+        diagram = (f'<div class="note">(no diagram sent: '
+                   f'{_NO_DIAGRAM_REASONS[t["diagram_status"]]})</div>')
     else:
         diagram = ""
     error = f'<div class="error">Error: {_esc(t["error"])}</div>' if t.get("error") else ""

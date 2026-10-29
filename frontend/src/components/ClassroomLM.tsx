@@ -611,6 +611,9 @@ async function sendMessage(overrideText?: string, hintLevel?: number) {
           student_model: studentModel,
           doc_ids: selectedDocIds,
           session_id: activeId,
+          // The problem show-your-work checks against, so a "draw it"
+          // follow-up still finds the problem in a long conversation.
+          ...(problem ? { active_problem: problem } : {}),
           ...(hintLevel !== undefined ? { hint_level: hintLevel } : {}),
         }),
       });

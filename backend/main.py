@@ -124,6 +124,10 @@ class TutorRequest(BaseModel):
     # deterministic Planner decision instead of the Router/Planner's own
     # judgment.
     hint_level: int | None = None
+    # The parsed problem the frontend keeps for this conversation (the same
+    # one it sends to /check-work). Lets a DRAW follow-up find the problem
+    # after its statement has scrolled out of the history window.
+    active_problem: dict | None = None
 
 class TutorResponse(BaseModel):
     response: str
@@ -338,7 +342,8 @@ def tutor_endpoint(request: TutorRequest, code: str = Depends(participant_code))
         agent = OrchestratorAgent()
         result = agent.run(request.message, request.conversation_history, request.student_model,
                             session_id=request.session_id, student_id=code,
-                            hint_level=request.hint_level)
+                            hint_level=request.hint_level,
+                            active_problem=request.active_problem)
         return TutorResponse(
             response=result["response"],
             decision=result["plan"].get("decision", result["plan"].get("action", "UNKNOWN")),
@@ -412,7 +417,8 @@ def tutor_stream_endpoint(request: TutorRequest, code: str = Depends(participant
                                           request.student_model, source_text,
                                           session_id=request.session_id,
                                           student_id=code,
-                                          hint_level=request.hint_level):
+                                          hint_level=request.hint_level,
+                                          active_problem=request.active_problem):
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:
             # Log the full traceback server-side for diagnosis; send the frontend

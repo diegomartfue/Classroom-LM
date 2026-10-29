@@ -53,7 +53,8 @@ class DrawScopeClient:
                 payload["problem_scope"] = self.problem_scope
             return json.dumps(payload)
         if system is o.INPUT_PARSER_PROMPT:
-            return json.dumps({"family": "kinetics", "body_description": "a block"})
+            return json.dumps({"family": "kinetics", "body_description": "a block",
+                               "scenario": {"bodies": [{"label": "A", "kind": "particle"}]}})
         if system is o.VISUALIZER_PROMPT:
             return '<svg viewBox="0 0 10 10"></svg>'
         return json.dumps({})
