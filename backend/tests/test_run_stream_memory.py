@@ -23,6 +23,12 @@ class RecordingMemory:
         self.logged_turns.append((session_id, turn_number, data))
         return f"/fake/{session_id}/{turn_number}.json"
 
+    def read_turn(self, session_id, turn_number):
+        for sid, n, data in reversed(self.logged_turns):
+            if (sid, n) == (session_id, turn_number):
+                return data
+        return None
+
     def save_student_model(self, student_id, model):
         self.saved_models.append((student_id, model))
         return f"/fake/{student_id}.json"

@@ -998,6 +998,44 @@ class OrchestratorAgent:
             print(f"Diagram renderer error: {e}")
             return ""
 
+    def _problem_turn_input(self, parse_message: str, conversation_history: list,
+                            hint_level: int | None, active_problem: dict | None) -> dict:
+        """parsed_input for a PROBLEM turn. A Hint-button tap carries a canned
+        message ("Can I get a hint?"), not a problem, so it continues the
+        problem in play: the active problem when the browser sent a usable
+        one (the same object /check-work uses, so the solution cache lines
+        up), otherwise a parse told to resolve the follow-up."""
+        if hint_level is not None:
+            active = _clean_active_problem(active_problem)
+            if active is not None:
+                return active
+            return self.input_parser(parse_message, conversation_history,
+                                     extra_context=_HINT_PARSE_CONTEXT)
+        return self.input_parser(parse_message, conversation_history)
+
+    def _recent_created_problems(self, session_id: str, turn_number: int,
+                                 lookback: int = 3) -> list:
+        """The Creator's problems from the most recent CREATE turn among the
+        last `lookback` turns of this session, as [{"statement": ...}].
+        Read from the saved turn records, so "draw all of them" draws exactly
+        what was generated, never lines of an ordinary tutor reply."""
+        read_turn = getattr(self.memory, "read_turn", None)
+        if read_turn is None:
+            return []
+        for n in range(turn_number - 1, max(turn_number - 1 - lookback, -1), -1):
+            try:
+                data = read_turn(session_id, n)
+            except Exception:
+                data = None
+            if not isinstance(data, dict) or data.get("route") != "CREATE":
+                continue
+            statements = data.get("created_problems")
+            if statements is None:  # a run() record keeps the Creator's raw output
+                agents = data.get("agents") if isinstance(data.get("agents"), dict) else {}
+                statements = _created_statements(agents.get("creator"))
+            return [{"statement": st} for st in statements or [] if isinstance(st, str) and st]
+        return []
+
     def _parse_and_draw(self, parse_message: str, draw_request: str, route_decision: dict,
                         conversation_history: list, active_problem: dict | None,
                         log=None) -> tuple[dict, str, str]:
@@ -1454,7 +1492,8 @@ class OrchestratorAgent:
         # ---------- PROBLEM (default): Input Parser -> Student Modeler -> Pedagogical
         #            Planner -> (if SOLVE: Solver[retry] -> Validator -> Visualizer)
         #            -> Conversationalist ----------
-        parsed_input = self.input_parser(message, conversation_history)
+        parsed_input = self._problem_turn_input(message, conversation_history,
+                                                hint_level, active_problem)
         _log("input_parser", parsed_input)
 
         updated_student_model = self._student_modeler_safe(
@@ -1654,7 +1693,9 @@ class OrchestratorAgent:
         decision = None
         diagram_svg = ""
         # Filled from the pipeline's internal "trace" events (never sent on).
-        trace = {"problem_scope": None, "diagram_status": "not_attempted"}
+        trace = {"problem_scope": None, "diagram_status": "not_attempted",
+                 "parsed_input": None, "created_problems": None}
+        created_problems = self._recent_created_problems(session_id, turn_number)
         response_parts: list[str] = []
         error_text: str | None = None
 
@@ -1662,6 +1703,7 @@ class OrchestratorAgent:
             for event in self._run_stream_events(
                 message, conversation_history, student_model, source_text,
                 hint_level=hint_level, active_problem=active_problem,
+                created_problems=created_problems,
             ):
                 etype = event.get("type")
                 if etype == "trace":
@@ -1722,6 +1764,10 @@ class OrchestratorAgent:
                     # diagram was or wasn't sent (see _parse_and_draw).
                     "problem_scope": trace["problem_scope"],
                     "diagram_status": trace["diagram_status"],
+                    # The problem this turn worked on, and on a CREATE turn the
+                    # problems generated (what "draw all of them" draws later).
+                    "parsed_input": trace["parsed_input"],
+                    "created_problems": trace["created_problems"],
                     "error": error_text,
                 })
             except Exception:
@@ -1733,7 +1779,8 @@ class OrchestratorAgent:
 
     def _run_stream_events(self, message: str, conversation_history: list, student_model: dict,
                    source_text: str = "", hint_level: int | None = None,
-                   active_problem: dict | None = None):
+                   active_problem: dict | None = None,
+                   created_problems: list | None = None):
         """Streaming variant of run()'s pipeline. Generator yielding event dicts:
             {"type":"status","text":...}  progress during the silent pipeline phase
             {"type":"meta", ...}          one-shot: student_model, route, decision, diagram_image
@@ -1785,9 +1832,9 @@ class OrchestratorAgent:
         convo = _conversation_block(conversation_history)
 
         if route == "DRAW":
-            wants_multi = any(w in message.lower() for w in ("these", "them", "those", "all", "each"))
-            created_problems = _find_recent_created(conversation_history)
-            if wants_multi and created_problems:
+            # created_problems: what the Creator produced on a recent CREATE
+            # turn (run_stream() reads it from the session's turn records).
+            if _MULTI_DRAW_RE.search(message) and created_problems:
                 # Draw each created problem directly as SVG (unsolved) and
                 # concatenate the markup — multiple <svg> blocks render stacked.
                 svgs = []
@@ -1835,7 +1882,8 @@ class OrchestratorAgent:
                 "overall_verdict": "PASS" if svg_ok else "FAIL",
             }
             logger.info("DRAW diagram_status=%s", diagram_status)
-            yield {"type": "trace", "diagram_status": diagram_status}
+            yield {"type": "trace", "diagram_status": diagram_status,
+                   "parsed_input": parsed_input}
 
             yield {"type": "meta", "student_model": student_model, "route": route,
                    "decision": "DRAW", "diagram_svg": diagram_svg}
@@ -1916,7 +1964,8 @@ class OrchestratorAgent:
                 {"created_problems": created},
             )
 
-            yield {"type": "trace", "diagram_status": diagram_status}
+            yield {"type": "trace", "diagram_status": diagram_status,
+                   "created_problems": _created_statements(created)}
             yield {"type": "meta", "student_model": updated_student_model, "route": route,
                    "decision": "CREATE", "diagram_svg": diagram_svg}
 
@@ -1954,7 +2003,9 @@ class OrchestratorAgent:
 
         # PROBLEM path
         yield {"type": "status", "text": "Reading the problem\u2026"}
-        parsed_input = self.input_parser(message + source_block, conversation_history)
+        parsed_input = self._problem_turn_input(message + source_block, conversation_history,
+                                                hint_level, active_problem)
+        yield {"type": "trace", "parsed_input": parsed_input}
         updated_student_model = self._student_modeler_safe(
             parsed_input, student_model, conversation_history, fallback=student_model
         )
@@ -1990,9 +2041,14 @@ class OrchestratorAgent:
         # needs them to build known_values without any new LLM call — see
         # agents/work_checker.build_known_values) — no new agent call, this is the
         # same data already computed a few lines above for this exact turn.
+        # Only a complete problem goes back: the browser replaces the problem it
+        # keeps for show-your-work (and sends back as active_problem) with
+        # whatever arrives here, so a follow-up's partial parse ("I think
+        # T = 58.9 N") must not.
         yield {"type": "meta", "student_model": updated_student_model, "route": route,
             "decision": plan.get("decision", "UNKNOWN"), "diagram_svg": diagram_svg,
-            "parsed_input": parsed_input, "solution": solution}
+            "parsed_input": parsed_input if _is_full_problem(parsed_input) else None,
+            "solution": solution}
 
         context_bundle = {
             "student_message": message, "parsed_input": parsed_input,
@@ -2166,6 +2222,34 @@ def _has_bodies(parsed_input) -> bool:
     scenario = parsed_input.get("scenario")
     bodies = scenario.get("bodies") if isinstance(scenario, dict) else None
     return isinstance(bodies, list) and any(isinstance(b, dict) and b for b in bodies)
+
+
+def _is_full_problem(parsed_input) -> bool:
+    """A complete problem the browser may keep as its active problem — not a
+    follow-up the parser marked "unclear", and with bodies to work on."""
+    return _has_bodies(parsed_input) and parsed_input.get("problem_type") != "unclear"
+
+
+def _created_statements(created) -> list:
+    """The problem statements in a Creator response."""
+    problems = created.get("problems") if isinstance(created, dict) else None
+    return [p["statement"] for p in problems or []
+            if isinstance(p, dict) and isinstance(p.get("statement"), str) and p["statement"]]
+
+
+# "Draw all of them" and similar ask for every recently generated problem.
+# Whole words only: "ball", "wall", "small" and "theme" don't count.
+_MULTI_DRAW_RE = re.compile(r"\b(all|each|every|these|those|them|both)\b", re.IGNORECASE)
+
+# Parse instructions for a Hint-button turn with no usable active problem.
+_HINT_PARSE_CONTEXT = (
+    "TASK: the student pressed the Hint button. The latest message is a canned "
+    "request for a hint on the problem they are working on, not a problem "
+    "itself. Parse that problem in full from the conversation (every body, "
+    "connection, and given). Do not return problem_type \"unclear\" for this "
+    "follow-up. Only if no problem is described anywhere, return problem_type "
+    "\"unclear\" with scenario.bodies = [].\n\n"
+)
 
 
 def _clean_active_problem(active_problem) -> dict | None:
@@ -2502,26 +2586,3 @@ def _parse_json(text: str) -> dict:
     logger.warning("Agent returned unparseable JSON (%s). First 200 chars: %r",
                    reason, snippet)
     return {"parse_error": reason, "raw_response": text}
-    
-    
-    
-def _find_recent_created(conversation_history: list) -> list:
-    """Look back through recent assistant turns for created practice problems.
-    The conversationalist rendered them as text, but we re-parse from the last
-    few turns by re-detecting problem statements. Returns a list of {'statement': ...}.
-    Best-effort: if nothing structured is found, returns []."""
-    # We stored created problems only in-message; reconstruct from the last
-    # assistant message that looks like generated problems.
-    for msg in reversed(conversation_history[-6:]):
-        if msg.get("role") in ("assistant", "ai"):
-            content = msg.get("content", "")
-            # crude split: each "version" or numbered problem becomes one statement
-            chunks = []
-            for line in content.split("\n"):
-                line = line.strip()
-                if line and not line.lower().startswith(("given:", "find:", "here")):
-                    chunks.append(line)
-            if chunks:
-                # group into problem-sized statements (join, then split on blank markers)
-                return [{"statement": c} for c in chunks if len(c) > 40][:3]
-    return []

@@ -324,21 +324,81 @@ def test_unusable_active_problem_is_ignored(mode):
     assert "ACTIVE PROBLEM" not in client.parser_calls[0]
 
 
-# --- 7. Multi-problem draw still works ------------------------------------------
+# --- 7. Multi-problem draw ------------------------------------------------------
 
-def test_draw_all_of_them_draws_each_created_problem():
-    created = [
-        {"role": "user", "content": "make me two practice problems"},
-        {"role": "assistant", "content": (
-            "Here are two practice problems:\n"
-            "A 3 kg block slides down a 20 degree frictionless incline from rest.\n"
-            "A 4 kg crate is pushed across a rough floor with a 30 N horizontal force.")},
-    ]
+CREATED = ["A 3 kg block slides down a 20 degree frictionless incline from rest.",
+           "A 4 kg crate is pushed across a rough floor with a 30 N horizontal force."]
+CREATE_HISTORY = [
+    {"role": "user", "content": "make me two practice problems"},
+    {"role": "assistant", "content": "Here are two practice problems: " + " ".join(CREATED)},
+]
+
+
+def _memory_with_create_turn(record, history=CREATE_HISTORY):
+    """A CREATE turn saved as the turn just before the next request."""
+    memory = RecordingMemory()
+    memory.log_turn("s1", sum(m["role"] == "user" for m in history) - 1, record)
+    return memory
+
+
+@pytest.mark.parametrize("record", [
+    {"route": "CREATE", "created_problems": CREATED},                         # run_stream() record
+    {"route": "CREATE", "agents": {"creator": {"problems": [{"statement": st} for st in CREATED]}}},  # run()
+])
+def test_draw_all_of_them_draws_each_created_problem(record):
     client = DrawClient(scope="referential")
-    reply, svg, _ = _drive("run_stream", client, "draw all of them", created)
+    reply, svg, _ = _drive("run_stream", client, "draw all of them", CREATE_HISTORY,
+                           memory=_memory_with_create_turn(record))
     assert svg.count("<svg") == 2
-    assert len(client.visualizer_inputs) == 2
+    assert [_latest(c) for c in client.parser_calls] == CREATED  # the Creator's statements
     assert reply.startswith("Here are the setups for each problem")
+
+
+def test_whole_words_only_so_ball_does_not_trigger_multi_draw():
+    client = DrawClient(scope="referential")
+    memory = _memory_with_create_turn({"route": "CREATE", "created_problems": CREATED}, HISTORY)
+    # The same setup with a real trigger word does take the multi-draw path...
+    _drive("run_stream", DrawClient(scope="referential"), "draw them", HISTORY, memory=memory)
+    # ...but "ball" is not "all".
+    _drive("run_stream", client, "draw the hanging block and the ball", HISTORY, memory=memory)
+    assert len(client.parser_calls) == 1 and CREATED[0] not in client.parser_calls[0]
+
+
+def test_tutor_prose_is_never_drawn_as_problems():
+    """No CREATE turn: "draw all the forces" is a single-diagram request, even
+    though the last tutor reply is full of long lines."""
+    client = DrawClient(scope="referential")
+    _, svg, _ = _drive("run_stream", client, "draw all the forces on the hanging block", HISTORY)
+    [parse_input] = client.parser_calls
+    assert "TASK: the student wants a diagram." in parse_input
+    assert svg == GOOD_SVG
+
+
+def test_created_problems_are_saved_and_found_through_real_memory(tmp_path):
+    memory = SessionMemory(base_dir=str(tmp_path / "traces"), state_dir=str(tmp_path / "state"))
+    memory.log_turn("s1", 0, {"route": "CREATE", "created_problems": CREATED})
+    agent = OrchestratorAgent()
+    agent.memory = memory
+    assert agent._recent_created_problems("s1", 1) == [{"statement": st} for st in CREATED]
+    assert agent._recent_created_problems("s1", 5) == []  # older than 3 turns
+
+
+def test_stream_create_turn_saves_its_problems():
+    class CreateClient(DrawClient):
+        def create(self, **kw):
+            if kw["system"] is o.ROUTER_PROMPT:
+                return FakeResponse([FakeTextBlock(json.dumps({"route": "CREATE"}))])
+            if kw["system"] is o.CREATOR_PROMPT:
+                return FakeResponse([FakeTextBlock(json.dumps(
+                    {"problems": [{"statement": st} for st in CREATED]}))])
+            return super().create(**kw)
+
+    memory = RecordingMemory()
+    agent = OrchestratorAgent()
+    agent.client = CreateClient()
+    agent.memory = memory
+    list(agent.run_stream("make me two practice problems", [], {}, session_id="s1"))
+    assert memory.logged_turns[-1][2]["created_problems"] == CREATED
 
 
 # --- 8. Trace fields are saved, and the export still runs -------------------------
@@ -376,10 +436,13 @@ def test_export_runs_with_the_new_fields(tmp_path, monkeypatch):
                         str(tmp_path / "state"), "--out-dir", str(out)]) == 0
     [csv_path] = out.glob("*.csv")
     with csv_path.open(encoding="utf-8-sig", newline="") as fh:
-        assert next(csv.reader(fh)) == export.CSV_COLUMNS  # columns unchanged
+        [row] = list(csv.DictReader(fh))
+    assert list(row) == export.CSV_COLUMNS
+    assert row["diagram_status"] == "suppressed_placeholder"
     [json_path] = out.glob("*.json")
     [turn] = json.loads(json_path.read_text())["turns"]
-    assert "diagram_status" not in turn and "problem_scope" not in turn
+    assert turn["diagram_status"] == "suppressed_placeholder"
+    assert "problem_scope" not in turn and "parsed_input" not in turn
     page = (next(out.glob("transcripts_*")) / "P01.html").read_text()
     assert "(no diagram sent: the drawing was a placeholder, so it was withheld)" in page
 
@@ -401,3 +464,116 @@ def test_tutor_stream_endpoint_passes_active_problem(monkeypatch):
     from test_stream_error_path import _consume
     _consume(resp)
     assert seen["active_problem"] == PULLEY_PARSE
+
+
+# --- Hint turns continue the problem in play ------------------------------------
+
+class ProblemClient(DrawClient):
+    """A PROBLEM turn: the Router (when called) says PROBLEM, the parser
+    returns `parse`, the planner says HINT."""
+
+    def __init__(self, parse):
+        super().__init__(parse=parse)
+        self.systems = []
+
+    def create(self, **kw):
+        self.systems.append(kw["system"])
+        if kw["system"] is o.ROUTER_PROMPT:
+            return FakeResponse([FakeTextBlock(json.dumps(
+                {"route": "PROBLEM", "problem_scope": "referential"}))])
+        if kw["system"] is o.PEDAGOGICAL_PLANNER_PROMPT:
+            return FakeResponse([FakeTextBlock(json.dumps({"decision": "HINT"}))])
+        return super().create(**kw)
+
+
+def _problem_turn(mode, client, message, history, hint_level=None, active_problem=None,
+                  memory=None):
+    agent = OrchestratorAgent()
+    agent.client = client
+    agent.memory = memory or RecordingMemory()
+    if mode == "run":
+        agent.run(message, history, {}, session_id="s1", hint_level=hint_level,
+                  active_problem=active_problem)
+        return None
+    return list(agent.run_stream(message, history, {}, session_id="s1", hint_level=hint_level,
+                                 active_problem=active_problem))
+
+
+@BOTH
+def test_hint_turn_uses_the_active_problem_instead_of_reparsing(mode):
+    client = ProblemClient(parse=UNCLEAR_PARSE)
+    memory = RecordingMemory()
+    _problem_turn(mode, client, "Can I get a hint?", HISTORY, hint_level=1,
+                  active_problem=PULLEY_PARSE, memory=memory)
+    assert client.parser_calls == []
+    data = memory.logged_turns[-1][2]
+    if mode == "run":
+        assert data["agents"]["input_parser"] == PULLEY_PARSE
+    else:
+        assert data["parsed_input"] == PULLEY_PARSE
+
+
+@BOTH
+def test_hint_turn_without_an_active_problem_parses_the_follow_up(mode):
+    client = ProblemClient(parse=PULLEY_PARSE)
+    _problem_turn(mode, client, "Can I get a hint?", HISTORY, hint_level=1)
+    [parse_input] = client.parser_calls
+    assert "TASK: the student pressed the Hint button." in parse_input
+    assert PULLEY in parse_input
+
+
+def test_hint_level_3_worked_step_solves_the_active_problem(monkeypatch):
+    solved = []
+    agent = OrchestratorAgent()
+    agent.client = ProblemClient(parse=UNCLEAR_PARSE)
+    agent.memory = RecordingMemory()
+    monkeypatch.setattr(agent, "_with_worked_step",
+                        lambda plan, parsed: solved.append(parsed) or plan)
+    list(agent.run_stream("Can you show me one worked step?", HISTORY, {}, hint_level=3,
+                          active_problem=PULLEY_PARSE))
+    assert solved == [PULLEY_PARSE]
+
+
+def test_typed_problem_turns_still_parse_the_message():
+    client = ProblemClient(parse=PULLEY_PARSE)
+    _problem_turn("run_stream", client, PULLEY, [], active_problem=BOX_PARSE)
+    [parse_input] = client.parser_calls
+    assert "TASK:" not in parse_input and PULLEY in parse_input
+
+
+# --- Only a complete problem replaces the browser's active problem ---------------
+
+PARTIAL_PARSE = {"problem_type": "unclear", "scenario": {"bodies": []},
+                 "givens": [{"symbol": "T", "value": 58.9, "unit": "N"}],
+                 "raw_summary": "student proposes T = 58.9 N"}
+
+
+@pytest.mark.parametrize("parse, sent", [
+    (PULLEY_PARSE, PULLEY_PARSE),   # a new complete problem: browser replaces its copy
+    (PARTIAL_PARSE, None),          # a follow-up's partial parse: browser keeps its copy
+    ({**PULLEY_PARSE, "problem_type": "unclear"}, None),
+    ({**PULLEY_PARSE, "scenario": {"bodies": []}}, None),
+])
+def test_meta_carries_parsed_input_only_for_a_complete_problem(parse, sent):
+    events = _problem_turn("run_stream", ProblemClient(parse=parse),
+                           "I think the tension is 6 times 9.81 = 58.9 N", HISTORY)
+    meta = next(e for e in events if e["type"] == "meta")
+    assert meta["parsed_input"] == sent
+
+
+# --- Streamed turns save the parsed problem ---------------------------------------
+
+def test_streamed_problem_turn_saves_its_parsed_input():
+    memory = RecordingMemory()
+    _problem_turn("run_stream", ProblemClient(parse=PARTIAL_PARSE), "I think T = 58.9 N",
+                  HISTORY, memory=memory)
+    # Saved even when it is partial: that is exactly what a reviewer needs to see.
+    assert memory.logged_turns[-1][2]["parsed_input"] == PARTIAL_PARSE
+
+
+def test_streamed_draw_turn_saves_its_parsed_input():
+    memory = RecordingMemory()
+    _drive("run_stream", DrawClient(scope="referential"), FOLLOW_UP, HISTORY, memory=memory)
+    saved = memory.logged_turns[-1][2]["parsed_input"]
+    assert saved["scenario"]["bodies"] == PULLEY_PARSE["scenario"]["bodies"]
+    assert saved["draw_focus"]["bodies"] == ["B"]

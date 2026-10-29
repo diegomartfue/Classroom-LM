@@ -51,7 +51,7 @@ REDACTED_FILE = "[uploaded file]"
 
 CSV_COLUMNS = [
     "participant_code", "session_id", "timestamp", "turn_number",
-    "student_message", "tutor_reply", "route", "decision", "hint_level",
+    "student_message", "tutor_reply", "route", "decision", "diagram_status", "hint_level",
     "feedback", "check_work", "error",
 ]
 
@@ -126,7 +126,8 @@ def load_turns(traces_dir: Path, since: date | None) -> tuple[list[dict], int]:
             # SVG was recorded have diagram_rendered but no diagram_svg.
             "diagram_rendered": bool(data.get("diagram_rendered")),
             "diagram_svg": data.get("diagram_svg") or "",
-            # Why a diagram was or wasn't sent; absent on older turns.
+            # Why a diagram was or wasn't sent ("drawn", "skipped_no_bodies",
+            # ...); empty on turns saved before it was recorded.
             "diagram_status": data.get("diagram_status"),
             "problem_scope": data.get("problem_scope"),
         })
@@ -224,7 +225,7 @@ def _csv_safe(value) -> str:
 
 # Turn fields used by the HTML transcripts but kept out of the CSV and JSON,
 # so those two files stay exactly as they were.
-_TRANSCRIPT_ONLY = ("diagram_rendered", "diagram_svg", "diagram_status", "problem_scope")
+_TRANSCRIPT_ONLY = ("diagram_rendered", "diagram_svg", "problem_scope")
 
 
 def _utc_stamp() -> str:
