@@ -61,6 +61,47 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
 const STORAGE_KEY = 'classroomlm:conversations';
 const ACTIVE_KEY = 'classroomlm:activeId';
 
+// --- Whose conversations these are ----------------------------------------
+// Everything conversation-related in sessionStorage belongs to one
+// participant code, recorded here. A different code (signing in after
+// "Change", or a reload after another code signed in) starts from empty
+// storage, and every write names its owner so a reply still finishing for
+// the previous code can't land in the next student's storage.
+const OWNER_KEY = 'classroomlm:conversationsOwner';
+
+function ownsConversationStorage(code: string): boolean {
+  try {
+    return sessionStorage.getItem(OWNER_KEY) === code;
+  } catch {
+    return false;
+  }
+}
+
+// Removes conversation data only; the privacy notice, sidebar preference,
+// role and code live in localStorage and are kept.
+function clearConversationStorage(): void {
+  try {
+    const keys: string[] = [];
+    for (let i = 0; i < sessionStorage.length; i++) {
+      const key = sessionStorage.key(i);
+      if (key && isConversationKey(key)) keys.push(key);
+    }
+    keys.forEach(key => sessionStorage.removeItem(key));
+  } catch {
+    // storage unavailable — nothing was persisted to clear
+  }
+}
+
+function claimConversationStorage(code: string): void {
+  if (ownsConversationStorage(code)) return;
+  clearConversationStorage();
+  try {
+    sessionStorage.setItem(OWNER_KEY, code);
+  } catch {
+    // storage unavailable — conversations stay in memory only
+  }
+}
+
 // --- Participant code (pilot) -----------------------------------------
 // The student's only identity: a pilot code like P07, checked against the
 // server's allowlist (backend/participants.py) and sent as the
@@ -151,7 +192,8 @@ function loadHintLevel(conversationId: string): number {
   }
 }
 
-function saveHintLevel(conversationId: string, level: number): void {
+function saveHintLevel(owner: string, conversationId: string, level: number): void {
+  if (!ownsConversationStorage(owner)) return;
   try {
     sessionStorage.setItem(hintLevelKey(conversationId), String(level));
   } catch {
@@ -185,7 +227,8 @@ function loadProblem(conversationId: string): ParsedProblem | null {
   }
 }
 
-function saveProblem(conversationId: string, problem: ParsedProblem): void {
+function saveProblem(owner: string, conversationId: string, problem: ParsedProblem): void {
+  if (!ownsConversationStorage(owner)) return;
   try {
     sessionStorage.setItem(`${PROBLEM_KEY_PREFIX}${conversationId}`, JSON.stringify(problem));
   } catch {
@@ -256,6 +299,13 @@ type HistoryTurn = { role: 'user' | 'assistant'; content: string };
 
 const HISTORY_KEY_PREFIX = 'conversation_history_';
 
+function isConversationKey(key: string): boolean {
+  return key === STORAGE_KEY || key === ACTIVE_KEY || key === OWNER_KEY
+    || key.startsWith(HINT_LEVEL_KEY_PREFIX)
+    || key.startsWith(PROBLEM_KEY_PREFIX)
+    || key.startsWith(HISTORY_KEY_PREFIX);
+}
+
 function historyKey(conversationId: string): string {
   return `${HISTORY_KEY_PREFIX}${conversationId}`;
 }
@@ -273,7 +323,8 @@ function loadHistory(conversationId: string): HistoryTurn[] | null {
   return null;
 }
 
-function saveHistory(conversationId: string, history: HistoryTurn[]): void {
+function saveHistory(owner: string, conversationId: string, history: HistoryTurn[]): void {
+  if (!ownsConversationStorage(owner)) return;
   try {
     sessionStorage.setItem(historyKey(conversationId), JSON.stringify(history));
   } catch {
@@ -281,7 +332,8 @@ function saveHistory(conversationId: string, history: HistoryTurn[]): void {
   }
 }
 
-function clearHistory(conversationId: string): void {
+function clearHistory(owner: string, conversationId: string): void {
+  if (!ownsConversationStorage(owner)) return;
   try {
     sessionStorage.removeItem(historyKey(conversationId));
   } catch {
@@ -320,7 +372,13 @@ function loadSidebarCollapsed(): boolean {
 // accepted a participant code. A 401 from any later request (code removed
 // from the allowlist) sends the student back here.
 export default function ClassroomLM() {
-  const [participantCode, setParticipantCode] = useState<string>(loadParticipantCode);
+  // Claimed before TutorApp first reads sessionStorage, so a reload after a
+  // different code signed in (in this tab) starts with an empty sidebar.
+  const [participantCode, setParticipantCode] = useState<string>(() => {
+    const code = loadParticipantCode();
+    if (code) claimConversationStorage(code);
+    return code;
+  });
   const [role, setRole] = useState<Role>(loadRole);
   const [gateNotice, setGateNotice] = useState('');
 
@@ -330,6 +388,7 @@ export default function ClassroomLM() {
         apiBase={API_BASE}
         notice={gateNotice}
         onAccepted={(code, acceptedRole) => {
+          claimConversationStorage(code);
           saveParticipantCode(code);
           saveRole(acceptedRole);
           setRole(acceptedRole);
@@ -345,6 +404,8 @@ export default function ClassroomLM() {
       participantCode={participantCode}
       role={role}
       onSignOut={rejected => {
+        // The next person at this computer must not see these conversations.
+        clearConversationStorage();
         saveParticipantCode('');
         saveRole(null);
         setGateNotice(rejected
@@ -500,20 +561,22 @@ function TutorApp({ participantCode, role, onSignOut }: {
   // sessionStorage on every change so history survives reloads within the
   // browser session.
   useEffect(() => {
+    if (!ownsConversationStorage(participantCode)) return;
     try {
       sessionStorage.setItem(STORAGE_KEY, JSON.stringify(conversations));
     } catch {
       // storage full/unavailable — keep going with in-memory state only
     }
-  }, [conversations]);
+  }, [conversations, participantCode]);
 
   useEffect(() => {
+    if (!ownsConversationStorage(participantCode)) return;
     try {
       sessionStorage.setItem(ACTIVE_KEY, activeId);
     } catch {
       // ignore — non-persisted active id still works in-memory
     }
-  }, [activeId]);
+  }, [activeId, participantCode]);
 
   // On conversation switch (and on mount, for the initially-active
   // conversation), load the history ref from sessionStorage under
@@ -553,7 +616,7 @@ function TutorApp({ participantCode, role, onSignOut }: {
     setActiveId(id);
     // Fresh conversation: empty the ref and drop any stale persisted history.
     conversationHistoryRef.current = [];
-    clearHistory(id);
+    clearHistory(participantCode, id);
     setTimeout(() => textareaRef.current?.focus(), 0);
   }
 
@@ -651,7 +714,7 @@ async function sendMessage(overrideText?: string, hintLevel?: number) {
             if (evt.student_model) setStudentModel(evt.student_model);
             if (hasProblemShape(evt.parsed_input)) {
               setProblem(evt.parsed_input);
-              saveProblem(activeId, evt.parsed_input);
+              saveProblem(participantCode, activeId, evt.parsed_input);
             }
             patchAi({
               source: (evt.decision?.toLowerCase() as MessageSource) ?? 'llm',
@@ -695,7 +758,7 @@ async function sendMessage(overrideText?: string, hintLevel?: number) {
         { role: 'user', content: text },
         { role: 'assistant', content: streamed || '(no response)' },
       ];
-      saveHistory(activeId, conversationHistoryRef.current);
+      saveHistory(participantCode, activeId, conversationHistoryRef.current);
     } catch (err) {
       // Network/fetch failure (backend unreachable, non-OK status, etc.) —
       // same treatment as a mid-stream SSE error: a friendly message and a
@@ -796,7 +859,7 @@ async function sendMessage(overrideText?: string, hintLevel?: number) {
     if (isLoading) return;
     const nextLevel = Math.min(hintLevel + 1, MAX_HINT_LEVEL);
     setHintLevel(nextLevel);
-    saveHintLevel(activeId, nextLevel);
+    saveHintLevel(participantCode, activeId, nextLevel);
     sendMessage(HINT_LEVEL_PROMPTS[nextLevel], nextLevel);
   }
 
