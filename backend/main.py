@@ -2,7 +2,6 @@
 ClassroomLM Backend - FastAPI Server
 Handles AI tutoring requests with Claude + SymPy verification.
 """
-import shutil
 import os
 import base64
 import json
@@ -12,7 +11,6 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, UploadFile, File, HTTPException, Form, Request
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from rag_pipeline import ingest_document, query_rag
 import document_store
 from document_store import DocumentError, DocumentForbidden
 from feedback_store import FeedbackError, record_feedback
@@ -60,12 +58,6 @@ def current_identity(request: Request) -> participants.Identity:
     return ident
 
 
-def require_professor(ident: participants.Identity = Depends(current_identity)) -> participants.Identity:
-    if not ident.is_professor:
-        raise HTTPException(status_code=403, detail="Only the professor can do that.")
-    return ident
-
-
 app = FastAPI(dependencies=[Depends(participant_code)])
 
 
@@ -102,9 +94,6 @@ class ChatResponse(BaseModel):
     sympy_result: dict | None = None
     sympy_verified: bool = False
     
-class QueryRequest(BaseModel):
-    question: str
-
 class TutorRequest(BaseModel):
     message: str
     conversation_history: list = []
@@ -299,31 +288,6 @@ async def interpret_endpoint(file: UploadFile = File(...)):
 
     except Exception as e:
         return {"status": "error", "message": str(e)}
-
-
-@app.post("/upload")
-async def upload_endpoint(file: UploadFile = File(...),
-                          _prof: participants.Identity = Depends(require_professor)):
-    """Legacy RAG ingest into the shared "professor_materials" collection
-    that /query searches for everyone — so professor only."""
-    # Never build a path from the uploaded name ("../../x" would escape).
-    temp_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             f"temp_upload_{uuid.uuid4().hex}.pdf")
-    try:
-        with open(temp_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        result = ingest_document(temp_path)
-        return result
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-
-
-@app.post("/query")
-def query_endpoint(request: QueryRequest):
-    return query_rag(request.question)
 
 
 @app.get("/cost-estimate")

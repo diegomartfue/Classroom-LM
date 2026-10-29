@@ -4,18 +4,8 @@ directly (same pattern as test_stream_error_path.py), no server needed and
 no real API calls.
 """
 import functools
-import sys
-import types
 
 import pytest
-
-# Shim the heavy rag_pipeline (chromadb) so `import main` works offline —
-# same shim as test_stream_error_path.py.
-if "rag_pipeline" not in sys.modules:
-    _fake = types.ModuleType("rag_pipeline")
-    _fake.ingest_document = lambda *a, **k: {}
-    _fake.query_rag = lambda *a, **k: {}
-    sys.modules["rag_pipeline"] = _fake
 
 import main  # noqa: E402
 import feedback_store  # noqa: E402

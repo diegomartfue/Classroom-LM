@@ -4,18 +4,8 @@ ADDITIONAL FINDING #2 — /tutor/stream error observability.
 On an unexpected exception the frontend must get a SAFE, generic SSE error
 (no stack trace, no raw exception detail), while the server logs the failure.
 """
-import sys
-import types
 import asyncio
 import logging
-
-# Shim the heavy rag_pipeline (chromadb) so `import main` works in CI/offline.
-# main only uses ingest_document/query_rag from it, which this test never calls.
-if "rag_pipeline" not in sys.modules:
-    _fake = types.ModuleType("rag_pipeline")
-    _fake.ingest_document = lambda *a, **k: {}
-    _fake.query_rag = lambda *a, **k: {}
-    sys.modules["rag_pipeline"] = _fake
 
 import main  # noqa: E402
 

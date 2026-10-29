@@ -4,16 +4,8 @@ configurable CORS. Goes through FastAPI's TestClient so the real dependency
 and middleware stack runs. No Anthropic client is ever constructed: the
 gated routes used here either fail at the gate or never reach an agent.
 """
-import sys
-import types
 
 import pytest
-
-if "rag_pipeline" not in sys.modules:
-    _fake = types.ModuleType("rag_pipeline")
-    _fake.ingest_document = lambda *a, **k: {}
-    _fake.query_rag = lambda *a, **k: {}
-    sys.modules["rag_pipeline"] = _fake
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -80,7 +72,6 @@ def test_verify_endpoint(client):
     ("post", "/check-work", {"lines": ["m = 1"], "parsed_input": {"givens": [1]}}),
     ("post", "/feedback", {"session_id": "s", "turn_number": 0, "rating": "up"}),
     ("post", "/chat", {"message": "hi"}),
-    ("post", "/query", {"question": "hi"}),
     ("get", "/documents", None),
     ("post", "/documents/summarize", {"doc_id": "x"}),
 ])

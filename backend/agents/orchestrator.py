@@ -15,12 +15,6 @@ import logging
 import os
 import re
 import anthropic
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import numpy as np
-import io
-import base64
 import uuid
 from datetime import datetime, timezone
 from .memory import SessionMemory
@@ -95,69 +89,6 @@ RULES:
 - If the student's message is a follow-up (not a new problem), return problem_type: "unclear" and note it in raw_summary.
 
 Return ONLY the JSON object. No prose."""
-
-DIAGRAM_RENDERER_PROMPT = """You are the Diagram Renderer agent for a 2D rigid body statics tutoring system.
-Your job is to generate Python matplotlib code that renders a free body diagram based on the visualizer's structured output.
-
-You will receive:
-- The visualizer agent's output (JSON describing FBD elements)
-- The solver's solution (for reference values)
-
-You must output ONLY executable Python code — no explanation, no markdown fences, just raw Python.
-
-Your code MUST follow these STRICT drawing rules:
-
-COORDINATE SETUP:
-- Place the beam horizontally. Its left end is at x=0, right end at x=beam_length (parse from body element).
-- Beam sits at y=0.
-- Use ax.set_xlim(-2, beam_length + 2) and ax.set_ylim(-3, 3).
-
-BEAM/BODY:
-- Draw as a thick horizontal line from (0,0) to (beam_length, 0) with navy color #041E42, linewidth=8.
-
-PIN SUPPORT:
-- Located at the beam's left end (x=0, y=0).
-- Draw a triangle BELOW the beam: vertices at (0, 0), (-0.3, -0.6), (0.3, -0.6).
-- Add hatching marks below the triangle base.
-- Label "A" BELOW the hatching.
-
-ROLLER SUPPORT:
-- Located at the beam's right end.
-- Draw a triangle BELOW the beam with a small circle at the bottom.
-- Label "B" BELOW it.
-
-REACTION FORCES (the ones computed by the solver, e.g. Ay, By, Ax):
-- Arrows ORIGINATE at the support point and POINT IN THE DIRECTION given.
-- If direction is "up" or "+y": arrow goes from support point (x, 0) upward to (x, 0.8).
-- If direction is "down" or "-y": arrow goes from (x, 0) downward to (x, -0.8).
-- If direction is "right" or "+x": arrow from (x, 0) to (x+0.8, 0).
-- If direction is "left" or "-x": arrow from (x, 0) to (x-0.8, 0).
-- If magnitude is "0 N" or 0: DO NOT draw the arrow. Just write a small text "Ax = 0" near the support.
-- Place the label at the arrow's TIP, offset slightly.
-
-APPLIED LOADS (like P, external forces on the body):
-- Arrow ENDS at the point of application on the beam.
-- If direction is "down": arrow from (x, 1.2) downward to (x, 0.05). Label "P = 100 N" ABOVE the arrow tail.
-
-AXES:
-- Draw in lower-left corner at (-1.5, -2): small x-axis (arrow to right, labeled "x") and y-axis (arrow up, labeled "y").
-
-COLORS:
-- Beam: navy #041E42
-- All forces (applied AND reactions): orange #FF8200, linewidth=2
-- Support symbols and labels: black #0a0a0a
-- Axes: gray #555555
-
-Use matplotlib's ax.annotate() with arrowstyle="-|>" for all arrows.
-
-Required ending of your code:
-buf = io.BytesIO()
-fig.savefig(buf, format='png', bbox_inches='tight', dpi=120, facecolor='white')
-plt.close(fig)
-buf.seek(0)
-result = base64.b64encode(buf.read()).decode('utf-8')"""
-
-
 
 STUDENT_MODELER_PROMPT = """You maintain a structured model of a student's understanding of 2D dynamics.
 
@@ -948,37 +879,6 @@ class OrchestratorAgent:
     
     
         
-    def diagram_renderer(self, visualizer_output: dict, solution: dict) -> str:
-        """
-        Generates matplotlib code from visualizer output and executes it.
-        Returns a base64-encoded PNG string, or empty string on failure.
-        """
-        user_content = (
-            f"Visualizer output:\n{json.dumps(visualizer_output, indent=2)}\n\n"
-            f"Solver solution (for reference):\n{json.dumps(solution, indent=2)}"
-        )
-        response = self.client.messages.create(
-            model=SONNET_MODEL,
-            max_tokens=4000,
-            system=DIAGRAM_RENDERER_PROMPT,
-            messages=[{"role": "user", "content": user_content}],
-        )
-        code = extract_text(response).strip()
-
-        # Strip markdown fences if Claude adds them anyway
-        if code.startswith("```"):
-            lines = code.splitlines()
-            code = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-
-        # Execute the generated code in a sandboxed namespace
-        try:
-            namespace = {}
-            exec(code, namespace)
-            return namespace.get("result", "")
-        except Exception as e:
-            print(f"Diagram renderer error: {e}")
-            return ""
-
     def conversationalist(
         self,
         student_message: str,
@@ -1915,70 +1815,6 @@ class OrchestratorAgent:
             for chunk in stream.text_stream:
                 yield {"type": "token", "text": chunk}
         yield {"type": "done"}
-
-
-    # def run(self, message: str, conversation_history: list, student_model: dict) -> dict:
-    #     """
-    #     Orchestrate the full 7-agent pipeline.
-
-    #     Args:
-    #         message: The student's latest message.
-    #         conversation_history: List of dicts with 'role' and 'content'.
-    #         student_model: Current student model dict (may be empty).
-
-    #     Returns:
-    #         {
-    #             "response": str,           # conversationalist reply
-    #             "updated_student_model": dict,
-    #             "plan": dict,
-    #             "solution": dict | None,
-    #             "validation": dict | None,
-    #             "visualization": dict | None,
-    #             "parsed_input": dict,
-    #         }
-    #     """
-    #     # 1. Parse input
-    #     parsed_input = self.input_parser(message, conversation_history)
-
-    #     # 2. Update student model
-    #     updated_student_model = self.student_modeler(parsed_input, student_model, conversation_history)
-
-    #     # 3. Decide what to do
-    #     plan = self.pedagogical_planner(parsed_input, updated_student_model, conversation_history, raw_message=message)
-
-    #     solution = None
-    #     validation = None
-    #     visualization = None
-    #     diagram_image = "" 
-
-    #     # 4. Solve → validate → visualize only when the planner says SOLVE
-    #     if plan.get("decision") == "SOLVE":
-    #         solution = self.solver(parsed_input)
-    #         validation = self.validator(parsed_input, solution)
-    #         visualization = self.visualizer(parsed_input, validation)
-    #         diagram_image = self.diagram_renderer(visualization, solution)
-
-    #     # 5. Generate the student-facing response
-    #     response_text = self.conversationalist(
-    #         student_message=message,
-    #         parsed_input=parsed_input,
-    #         student_model=updated_student_model,
-    #         plan=plan,
-    #         solution=solution,
-    #         validation=validation,
-    #         visualization=visualization,
-    #     )
-
-    #     return {
-    #         "response": response_text,
-    #         "updated_student_model": updated_student_model,
-    #         "plan": plan,
-    #         "solution": solution,
-    #         "validation": validation,
-    #         "visualization": visualization,
-    #         "diagram_image": diagram_image if plan.get("decision") == "SOLVE" else "",
-    #         "parsed_input": parsed_input,
-    #     }
 
 
 # ---------------------------------------------------------------------------

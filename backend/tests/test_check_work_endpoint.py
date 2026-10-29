@@ -6,16 +6,8 @@ real API call is possible.
 """
 import json
 import math
-import sys
-import types
 
 import pytest
-
-if "rag_pipeline" not in sys.modules:
-    _fake = types.ModuleType("rag_pipeline")
-    _fake.ingest_document = lambda *a, **k: {}
-    _fake.query_rag = lambda *a, **k: {}
-    sys.modules["rag_pipeline"] = _fake
 
 import main  # noqa: E402
 from agents import solution_cache  # noqa: E402
