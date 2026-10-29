@@ -1081,3 +1081,120 @@
   background: rgba(180, 52, 31, 0.09);
   color: #b4341f;
 }
+
+/* ========== Save chat as PDF ========== */
+.clm-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.clm-app .clm-print-btn {  /* .clm-app scope beats the reset's border: none */
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-light-medium);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  transition: background 100ms ease, color 100ms ease;
+}
+.clm-print-btn:hover:not(:disabled) { background: var(--bg-elevated); color: var(--text-primary); }
+.clm-print-btn:disabled { opacity: 0.45; cursor: default; }
+.clm-print-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(255, 130, 0, 0.18);
+}
+.clm-print-header { display: none; }
+
+/* The printout is just the conversation: every message, full width, black on
+   white. The app is a fixed-height viewport with its own scroll container, so
+   each layer of that is undone here or only the visible messages would print. */
+@media print {
+  @page { margin: 16mm 14mm; }
+
+  html, body, #root { height: auto !important; overflow: visible !important; background: #fff !important; }
+
+  .clm-sidebar,
+  .clm-sidebar-backdrop,
+  .clm-chat-header,
+  .clm-composer-wrap,
+  .clm-welcome,
+  .clm-suggestion-grid,
+  .clm-hint-btn,
+  .clm-msg-actions,
+  .clm-print-btn,
+  .clm-typing,
+  [data-sonner-toaster] {
+    display: none !important;
+  }
+
+  .clm-app,
+  .clm-main,
+  .clm-messages,
+  .clm-messages-inner {
+    display: block !important;
+    height: auto !important;
+    min-height: 0 !important;
+    width: auto !important;
+    max-width: none !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: #fff !important;
+    color: #000 !important;
+  }
+  .clm-main::before { display: none; }
+
+  .clm-print-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding-bottom: 8px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid #000;
+    font-size: 11pt;
+    color: #000;
+  }
+  .clm-print-brand { font-weight: 600; font-size: 13pt; }
+
+  .clm-message {
+    animation: none !important;
+    margin-bottom: 18px;
+    color: #000;
+  }
+  .clm-msg-avatar {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .clm-msg-author,
+  .clm-msg-content,
+  .clm-msg-content pre,
+  .clm-msg-content pre code {
+    color: #000 !important;
+  }
+  .clm-msg-content code { color: #000 !important; background: none !important; }
+  .clm-msg-content pre {
+    background: none !important;
+    white-space: pre-wrap;
+    overflow: visible !important;
+    break-inside: avoid;
+  }
+
+  /* Diagrams and display math: never clipped by their on-screen scrollers,
+     and kept on one page where they fit. */
+  .clm-msg-diagram,
+  .clm-diagram-zoomable,
+  .clm-msg-content .katex-display {
+    overflow: visible !important;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  .clm-msg-diagram svg,
+  .clm-diagram-zoomable {
+    max-width: 100% !important;
+    height: auto !important;
+    box-shadow: none !important;
+  }
+  .clm-msg-diagram {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

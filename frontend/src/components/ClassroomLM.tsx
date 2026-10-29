@@ -7,6 +7,7 @@ import Markdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import DOMPurify from 'dompurify';
+import { flushSync } from 'react-dom';
 import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -382,6 +383,14 @@ function TutorApp({ participantCode, role, onSignOut }: {
   const [isUploading, setIsUploading] = useState(false);
   const [studentModel, setStudentModel] = useState<object>({});
   const [uploadError, setUploadError] = useState('');
+  // Date in the print-only header. Refreshed right before every print (the
+  // button or Ctrl/⌘+P) so a tab left open overnight prints today's date.
+  const [printDate, setPrintDate] = useState(() => new Date().toLocaleDateString());
+  useEffect(() => {
+    const onBeforePrint = () => flushSync(() => setPrintDate(new Date().toLocaleDateString()));
+    window.addEventListener('beforeprint', onBeforePrint);
+    return () => window.removeEventListener('beforeprint', onBeforePrint);
+  }, []);
   // Hint ladder level for the active conversation (item 7); reloaded
   // whenever the student switches conversations.
   const [hintLevel, setHintLevel] = useState<number>(() => loadHintLevel(activeId));
@@ -1064,10 +1073,26 @@ async function sendMessage(overrideText?: string, hintLevel?: number) {
               <span className="clm-subject-tag">Dynamics</span>
             </div>
           </div>
-          <div className="clm-mode-pill">
-            <span className="clm-mode-dot" />
-            Claude · Ready
+          <div className="clm-header-right">
+            <button
+              className="clm-print-btn"
+              onClick={() => window.print()}
+              disabled={messages.length === 0}
+              title="Print this conversation or save it as a PDF"
+            >
+              Save chat as PDF
+            </button>
+            <div className="clm-mode-pill">
+              <span className="clm-mode-dot" />
+              Claude · Ready
+            </div>
           </div>
+        </div>
+
+        {/* Shown only when printing (see @media print in ClassroomLM.css). */}
+        <div className="clm-print-header" aria-hidden="true">
+          <span className="clm-print-brand">ClassroomLM</span>
+          <span>{printDate}</span>
         </div>
 
         <div className="clm-messages">

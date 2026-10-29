@@ -219,3 +219,158 @@ def test_private_upload_names_are_redacted_and_professor_turns_skipped(tmp_path,
     dump = json.loads(json_path.read_text())
     assert {t["participant_code"] for t in dump["turns"]} == {"P07"}
     assert dump["skipped_professor_turns"] == 1
+
+
+# --- HTML transcripts ----------------------------------------------------------
+
+import base64  # noqa: E402
+import re  # noqa: E402
+
+_SVG = ('<svg viewBox="0 0 40 20"><text x="2" y="12">mg</text>'
+        '<script>alert("svg")</script></svg>')
+
+
+@pytest.fixture
+def transcript_data(tmp_path, monkeypatch):
+    """One participant, two sessions (ids sort opposite to their time order):
+    a math turn, an HTML-characters turn, a turn with a saved diagram, and an
+    older turn whose diagram was shown but not saved."""
+    monkeypatch.setenv("PILOT_PROFESSOR_CODES", "")
+    monkeypatch.setenv("PILOT_PROFESSORS_FILE", str(tmp_path / "none.txt"))
+    traces, state = tmp_path / "traces", tmp_path / "state"
+    memory = SessionMemory(base_dir=str(traces), state_dir=str(state))
+
+    def turn(session, n, message, reply, logged_at, **extra):
+        path = memory.log_turn(session, n, {
+            "participant_code": "EAGLE1234", "student_message": message,
+            "hint_level": extra.get("hint_level"), "route": "PROBLEM", "decision": "HINT",
+            "response_text": reply, "error": None,
+            **{k: v for k, v in extra.items() if k != "hint_level"},
+        })
+        record = json.loads(Path(path).read_text())
+        record["logged_at"] = logged_at
+        Path(path).write_text(json.dumps(record))
+
+    turn("zz-first", 0, "What is Newton's second law?", "It says $F = ma$, and $$\\sum M = I\\alpha$$.",
+         "2026-10-01T09:00:00+00:00", diagram_rendered=False, diagram_svg="")
+    turn("zz-first", 1, 'Is <script>alert("x")</script> & 5 < 6 > 4 ok?', "Yes, 5 < 6.",
+         "2026-10-01T09:05:00+00:00", hint_level=2)
+    turn("aa-second", 0, "Draw the FBD", "Here is the diagram.",
+         "2026-10-03T14:30:00+00:00", diagram_rendered=True, diagram_svg=_SVG)
+    turn("aa-second", 1, "And the old one?", "Shown earlier.",
+         "2026-10-03T14:35:00+00:00", diagram_rendered=True)  # saved before diagram_svg existed
+    record_feedback("aa-second", 0, "EAGLE1234", "down", path=str(state / "feedback.jsonl"))
+    record_check_work("zz-first", 1, "EAGLE1234", [
+        {"line": "F = m*a", "status": "correct", "detail": ""},
+        {"line": "a < 0", "status": "incorrect", "detail": "sign <flipped>"},
+    ], path=str(state / "check_work.jsonl"))
+    return {"traces": traces, "state": state, "out": tmp_path / "exports"}
+
+
+def _run_transcripts(d, *extra):
+    assert export.main(["--traces-dir", str(d["traces"]), "--state-dir", str(d["state"]),
+                        "--out-dir", str(d["out"]), *extra]) == 0
+    [folder] = d["out"].glob("transcripts_*")
+    return folder
+
+
+def test_transcript_files_and_index(transcript_data):
+    folder = _run_transcripts(transcript_data)
+    [csv_path] = transcript_data["out"].glob("conversations_*.csv")
+    # Same UTC timestamp as the CSV/JSON pair.
+    assert folder.name == "transcripts_" + csv_path.stem.removeprefix("conversations_")
+    assert sorted(p.name for p in folder.iterdir()) == ["EAGLE1234.html", "index.html"]
+    index = (folder / "index.html").read_text()
+    assert '<a href="EAGLE1234.html">EAGLE1234</a>' in index
+    assert "<td>2</td><td>4</td>" in index
+
+
+def test_transcript_header_sessions_and_turn_details(transcript_data):
+    page = (_run_transcripts(transcript_data) / "EAGLE1234.html").read_text()
+    assert "Participant EAGLE1234" in page
+    assert "2 sessions &middot; 4 turns &middot; 2026-10-01 to 2026-10-03" in page
+    # Sessions in time order, not session-id order.
+    assert page.index("started 2026-10-01 09:00 UTC") < page.index("started 2026-10-03 14:30 UTC")
+    assert page.index("Newton&#x27;s second law") < page.index("Draw the FBD")
+    assert "2026-10-01 09:05 UTC" in page
+    assert "Hint level 2" in page
+    assert "Rated &#128078; not helpful" in page
+    # The check sits under the turn it belongs to (turn 1 of the first session).
+    check_at = page.index("Show your work check")
+    assert page.index("Is &lt;script&gt;") < check_at < page.index("Draw the FBD")
+    assert "a &lt; 0" in page and "sign &lt;flipped&gt;" in page
+
+
+def test_transcript_escapes_student_text(transcript_data):
+    page = (_run_transcripts(transcript_data) / "EAGLE1234.html").read_text()
+    assert ("Is &lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; 5 &lt; 6 &gt; 4 ok?"
+            in page)
+    # The only <script> tags are the KaTeX loaders.
+    assert all("cdn.jsdelivr.net/npm/katex" in tag
+               for tag in re.findall(r"<script[^>]*>", page))
+
+
+def test_transcript_math_is_left_for_katex(transcript_data):
+    page = (_run_transcripts(transcript_data) / "EAGLE1234.html").read_text()
+    assert "It says $F = ma$, and $$\\sum M = I\\alpha$$." in page
+    assert "cdn.jsdelivr.net/npm/katex@" in page and "auto-render.min.js" in page
+    assert "renderMathInElement" in page and "left: '$', right: '$'" in page
+
+
+def test_transcript_diagrams_are_base64_images(transcript_data):
+    page = (_run_transcripts(transcript_data) / "EAGLE1234.html").read_text()
+    [encoded] = re.findall(r'<img src="data:image/svg\+xml;base64,([A-Za-z0-9+/=]+)"', page)
+    svg = base64.b64decode(encoded).decode()
+    assert svg.startswith('<svg xmlns="http://www.w3.org/2000/svg" viewBox')
+    assert "<text" in svg
+    # Never inlined: the SVG's own markup (and its script) isn't in the page.
+    assert "<svg" not in page and 'alert("svg")' not in page
+    assert page.count("(diagram shown, not saved)") == 1
+
+
+def test_no_transcripts_flag(transcript_data):
+    args = ["--traces-dir", str(transcript_data["traces"]),
+                             "--state-dir", str(transcript_data["state"]),
+                             "--out-dir", str(transcript_data["out"]), "--no-transcripts"]
+    assert export.main(args) == 0
+    assert sorted(p.suffix for p in transcript_data["out"].iterdir()) == [".csv", ".json"]
+
+
+def test_csv_and_json_carry_no_diagram_fields(transcript_data):
+    _run_transcripts(transcript_data)
+    [csv_path] = transcript_data["out"].glob("*.csv")
+    [json_path] = transcript_data["out"].glob("*.json")
+    with csv_path.open(encoding="utf-8-sig", newline="") as fh:
+        assert list(next(csv.reader(fh))) == export.CSV_COLUMNS
+    for turn in json.loads(json_path.read_text())["turns"]:
+        assert "diagram_svg" not in turn and "diagram_rendered" not in turn
+
+
+def test_transcripts_redact_uploads_and_skip_professor_and_codeless(tmp_path, monkeypatch):
+    monkeypatch.setenv("PILOT_PROFESSOR_CODES", "PROF-7Q")
+    monkeypatch.setenv("PILOT_PROFESSORS_FILE", str(tmp_path / "none.txt"))
+    traces, state, uploads = tmp_path / "traces", tmp_path / "state", tmp_path / "uploads"
+    memory = SessionMemory(base_dir=str(traces), state_dir=str(state))
+    (uploads / "participants" / "P07").mkdir(parents=True)
+    (uploads / "participants" / "P07" / "index.json").write_text(json.dumps([
+        {"doc_id": "0123456789ab", "filename": "JaneSmith_HW3.pdf", "scope": "private"}]))
+    _turn(memory, "conv-a", 0, "P07", "I uploaded JaneSmith_HW3.pdf", "Reading janesmith_hw3 now.")
+    _turn(memory, "conv-p", 0, "PROF-7Q", "testing the tutor", "hello professor")
+    memory.log_turn("old-dev", 0, {"route": "PROBLEM", "response_text": "hi"})
+
+    out = tmp_path / "exports"
+    assert export.main(["--traces-dir", str(traces), "--state-dir", str(state),
+                        "--uploads-dir", str(uploads), "--out-dir", str(out)]) == 0
+    [folder] = out.glob("transcripts_*")
+    assert sorted(p.name for p in folder.iterdir()) == ["P07.html", "index.html"]
+    everything = "".join(p.read_text() for p in folder.iterdir())
+    assert "janesmith" not in everything.lower() and "PROF-7Q" not in everything
+    assert "I uploaded [uploaded file]" in everything
+
+
+def test_empty_export_writes_an_empty_index(tmp_path):
+    out = tmp_path / "exports"
+    assert export.main(["--traces-dir", str(tmp_path / "none"), "--state-dir",
+                        str(tmp_path / "none"), "--out-dir", str(out)]) == 0
+    [folder] = out.glob("transcripts_*")
+    assert [p.name for p in folder.iterdir()] == ["index.html"]

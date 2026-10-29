@@ -1064,10 +1064,15 @@ class OrchestratorAgent:
         except Exception:
             pass
 
+        # Created here, not in _run_turn, so the diagram the student was
+        # actually shown (known only once the turn returns) can be added below.
+        turn_record: dict = {"participant_code": student_id, "message": message,
+                             "hint_level": hint_level, "agents": {}}
         try:
             result = self._run_turn(
                 message, conversation_history, student_model,
                 session_id, student_id, turn_number, hint_level=hint_level,
+                turn_record=turn_record,
             )
         except DailyLimitReached:
             # Caught specifically, before the generic handler below, so the
@@ -1111,6 +1116,17 @@ class OrchestratorAgent:
                 "low_confidence": True,
             }
 
+        # Same diagram fields as run_stream()'s record: whether a diagram
+        # was shown, and its SVG. Skipped if the turn never logged anything.
+        if turn_record["agents"]:
+            shown_svg = result.get("diagram_svg") or ""
+            turn_record["diagram_rendered"] = bool(shown_svg)
+            turn_record["diagram_svg"] = shown_svg
+            try:
+                self.memory.log_turn(session_id, turn_number, turn_record)
+            except Exception:
+                pass
+
         # Persist the student model at the end of every turn.
         try:
             self.memory.save_student_model(
@@ -1131,7 +1147,7 @@ class OrchestratorAgent:
 
     def _run_turn(self, message: str, conversation_history: list, student_model: dict,
                   session_id: str, student_id: str, turn_number: int,
-                  hint_level: int | None = None) -> dict:
+                  hint_level: int | None = None, turn_record: dict | None = None) -> dict:
         """
         Router-as-orchestrator. The Router classifies the message, then the MCO
         dispatches one of five route-specific agent pipelines. Every agent's
@@ -1156,8 +1172,9 @@ class OrchestratorAgent:
         the Router call outright — one fewer API call, and no risk of the
         Router misclassifying a plain "can I get a hint?"-style message.
         """
-        turn_record: dict = {"participant_code": student_id, "message": message,
-                             "hint_level": hint_level, "agents": {}}
+        if turn_record is None:
+            turn_record = {"participant_code": student_id, "message": message,
+                           "hint_level": hint_level, "agents": {}}
 
         def _log(agent_name: str, output) -> None:
             # Accumulate into a single {turn}.json, rewritten after each agent.
@@ -1631,6 +1648,9 @@ class OrchestratorAgent:
                     "decision": decision,
                     "response_text": "".join(response_parts),
                     "diagram_rendered": bool(diagram_svg),
+                    # The SVG itself, so researchers can see exactly what
+                    # diagram the student was shown.
+                    "diagram_svg": diagram_svg or "",
                     "error": error_text,
                 })
             except Exception:
