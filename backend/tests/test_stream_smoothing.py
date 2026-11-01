@@ -2,18 +2,9 @@
 /tutor/stream: proxy-buffering headers, and the dev-only mock stream
 (MOCK_TUTOR_STREAM) that lets the frontend smoothing be tested with no API.
 """
-import sys
-import types
 import asyncio
 import json
 import random
-
-# Shim the heavy rag_pipeline (chromadb) so `import main` works in CI/offline.
-if "rag_pipeline" not in sys.modules:
-    _fake = types.ModuleType("rag_pipeline")
-    _fake.ingest_document = lambda *a, **k: {}
-    _fake.query_rag = lambda *a, **k: {}
-    sys.modules["rag_pipeline"] = _fake
 
 import main  # noqa: E402
 import mock_stream  # noqa: E402

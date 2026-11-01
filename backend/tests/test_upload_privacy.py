@@ -7,17 +7,10 @@ so we can see exactly which document text they were given. No API calls:
 uploads are .txt files, which never go to a vision model.
 """
 import json
-import sys
 import types
 from pathlib import Path
 
 import pytest
-
-if "rag_pipeline" not in sys.modules:
-    _fake = types.ModuleType("rag_pipeline")
-    _fake.ingest_document = lambda *a, **k: {}
-    _fake.query_rag = lambda *a, **k: {}
-    sys.modules["rag_pipeline"] = _fake
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -246,14 +239,3 @@ def test_code_on_both_lists_is_only_a_participant(monkeypatch, client):
     assert client.post("/participant/verify", json={"code": A}).json()["role"] == "participant"
     upload(client, A, "mine.txt", A_TEXT)
     assert all(d["scope"] == "private" for d in ids(client, A).values())
-
-
-def test_legacy_rag_upload_is_professor_only(client, monkeypatch):
-    ingested = []
-    monkeypatch.setattr(main, "ingest_document", lambda path: ingested.append(path) or {"ok": True})
-    files = {"file": ("../../evil.pdf", b"%PDF-1.4", "application/pdf")}
-    assert client.post("/upload", headers=h(A), files=files).status_code == 403
-    assert ingested == []
-    assert client.post("/upload", headers=h(PROF), files=files).status_code == 200
-    # Temp file path never built from the uploaded name.
-    assert "evil" not in ingested[0] and ".." not in ingested[0]

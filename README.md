@@ -34,9 +34,8 @@ flowchart TD
     E --> L[Response to Student]
     K2 --> L
 
-    D --> M[RAG Pipeline]
-    M --> N[ChromaDB Vector Database]
-    M --> O[Course Materials]
+    D --> M[Document Store]
+    M --> O[Uploaded Course Materials]
     O -.->|feeds course context| D
 ```
 
@@ -178,8 +177,6 @@ writes, not all at once.
 - Files uploaded before this layout (loose in `backend/uploads/` and listed
   in `backend/documents.json`) are not shown to anyone. If there are any,
   have the professor re-upload the ones that should be shared.
-- The old `/upload` + `/query` search index is shared by everyone, so
-  `/upload` is professor-only.
 
 ## Exporting pilot data
 
@@ -224,7 +221,6 @@ replaced with `[uploaded file]`.
 | Validator | claude-sonnet-4-6 | 0 | Verify solver output via independent checks |
 | Visualizer | claude-opus-4-7 | 0 | Produce structured FBD spec for the renderer |
 | Schematic Layout | claude-sonnet-4-6 | 0.2 | Lay out an approximate schematic for multi-body setups (FBD fallback) |
-| Diagram Renderer | claude-sonnet-4-6 | 0 | Generate matplotlib diagram code (streaming path) |
 | Conversationalist | claude-sonnet-4-6 | 0.5 | Student-facing dialogue voice |
 
 ## Tech Stack
@@ -232,7 +228,6 @@ replaced with `[uploaded file]`.
 - **Backend**: FastAPI (Python)
 - **AI**: Anthropic Claude API (primary)
 - **Math**: SymPy (verification), pint (units)
-- **Vector DB**: ChromaDB
 - **Diagrams**: Matplotlib → SVG/PNG
 
 ## MVP Scope

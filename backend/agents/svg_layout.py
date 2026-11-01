@@ -33,12 +33,10 @@ geometry bounding box, and nudge only the colliding text elements to a
 nearby clear spot.
 
 Dependency choice — xml.etree, not lxml:
-Both xml.etree (stdlib) and lxml are importable in this venv, but lxml is
-NOT listed in backend/requirements.txt; it is pulled in transitively by
-another dependency (chromadb), not something this codebase declares or can
-rely on staying installed. xml.etree is stdlib, always available, and
-sufficient for SVG's simple, non-DTD XML — so it is the one actually "already
-a dependency" in the sense that matters (declared, not just present).
+lxml is NOT listed in backend/requirements.txt; it is only installed
+transitively (python-docx depends on it), not something this codebase
+declares or can rely on staying installed. xml.etree is stdlib, always
+available, and sufficient for SVG's simple, non-DTD XML.
 
 Text measurement — a fixed heuristic, not PIL ImageFont:
 Pillow is also importable here, but only as a transitive dependency of
