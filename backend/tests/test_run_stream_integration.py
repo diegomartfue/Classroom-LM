@@ -29,7 +29,8 @@ class RoutingClient:
         if system is o.ROUTER_PROMPT:
             return json.dumps({"route": self.route, "rationale": "x", "confidence": 0.9})
         if system is o.INPUT_PARSER_PROMPT:
-            return json.dumps({"body_description": "block on incline", "is_in_scope": True})
+            return json.dumps({"body_description": "block on incline", "is_in_scope": True,
+                               "scenario": {"bodies": [{"label": "A", "kind": "particle"}]}})
         if system is o.STUDENT_MODELER_PROMPT:
             return json.dumps({"mastered": [], "struggling": ["newtons_second_law"]})
         if system is o.PEDAGOGICAL_PLANNER_PROMPT:

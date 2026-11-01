@@ -5,10 +5,14 @@ Export every saved pilot conversation for research review.
     python scripts/export_conversations.py                    # everything
     python scripts/export_conversations.py --since 2026-10-01 # turns on/after a UTC date
 
-Writes two files to backend/exports/ (gitignored):
+Writes to backend/exports/ (gitignored):
   conversations_<UTC timestamp>.csv    one row per tutor turn
   conversations_<UTC timestamp>.json   the same turns with every feedback
                                        and check-work entry in full
+  transcripts_<UTC timestamp>/         one readable HTML transcript per
+                                       participant (<CODE>.html, with the
+                                       diagrams they were shown) plus an
+                                       index.html; skip with --no-transcripts
 
 Sources, all written by the running backend:
   traces/{session_id}/{turn}.json   the turn itself (agents/memory.py)
@@ -25,7 +29,9 @@ replaced with "[uploaded file]". No API calls; read-only on the data folders.
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
+import html
 import json
 import re
 import sys
@@ -45,7 +51,7 @@ REDACTED_FILE = "[uploaded file]"
 
 CSV_COLUMNS = [
     "participant_code", "session_id", "timestamp", "turn_number",
-    "student_message", "tutor_reply", "route", "decision", "hint_level",
+    "student_message", "tutor_reply", "route", "decision", "diagram_status", "hint_level",
     "feedback", "check_work", "error",
 ]
 
@@ -116,6 +122,14 @@ def load_turns(traces_dir: Path, since: date | None) -> tuple[list[dict], int]:
             "decision": _decision_from(data),
             "hint_level": data.get("hint_level"),
             "error": data.get("error"),
+            # Transcripts only (see _TRANSCRIPT_ONLY). Turns saved before the
+            # SVG was recorded have diagram_rendered but no diagram_svg.
+            "diagram_rendered": bool(data.get("diagram_rendered")),
+            "diagram_svg": data.get("diagram_svg") or "",
+            # Why a diagram was or wasn't sent ("drawn", "skipped_no_bodies",
+            # ...); empty on turns saved before it was recorded.
+            "diagram_status": data.get("diagram_status"),
+            "problem_scope": data.get("problem_scope"),
         })
     turns.sort(key=lambda t: (t["participant_code"], t["session_id"], t["turn_number"]))
     return turns, skipped
@@ -174,7 +188,7 @@ def build_export(traces_dir: Path, feedback_path: Path, check_work_path: Path,
     turns = [t for t in turns if t["participant_code"] not in professors]
     names = private_upload_names(uploads_dir) if uploads_dir else []
     for t in turns:
-        for field in ("student_message", "tutor_reply", "error"):
+        for field in ("student_message", "tutor_reply", "error", "diagram_svg"):
             t[field] = _redact(t[field], names)
     feedback = _by_turn(read_feedback(path=str(feedback_path)))
     checks = _by_turn(read_check_work(path=str(check_work_path)))
@@ -209,9 +223,18 @@ def _csv_safe(value) -> str:
     return "'" + s if s.startswith(_FORMULA_PREFIXES) else s
 
 
-def write_export(export: dict, out_dir: Path) -> tuple[Path, Path]:
+# Turn fields used by the HTML transcripts but kept out of the CSV and JSON,
+# so those two files stay exactly as they were.
+_TRANSCRIPT_ONLY = ("diagram_rendered", "diagram_svg", "problem_scope")
+
+
+def _utc_stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def write_export(export: dict, out_dir: Path, stamp: str | None = None) -> tuple[Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = stamp or _utc_stamp()
     csv_path = out_dir / f"conversations_{stamp}.csv"
     json_path = out_dir / f"conversations_{stamp}.json"
     # utf-8-sig so Excel opens accented (e.g. Spanish) text correctly.
@@ -220,9 +243,230 @@ def write_export(export: dict, out_dir: Path) -> tuple[Path, Path]:
         writer.writeheader()
         for t in export["turns"]:
             writer.writerow({col: _csv_safe(t.get(col)) for col in CSV_COLUMNS})
-    json_path.write_text(json.dumps(export, indent=2, ensure_ascii=False, default=str),
+    json_export = {**export, "turns": [
+        {k: v for k, v in t.items() if k not in _TRANSCRIPT_ONLY} for t in export["turns"]]}
+    json_path.write_text(json.dumps(json_export, indent=2, ensure_ascii=False, default=str),
                          encoding="utf-8")
     return csv_path, json_path
+
+
+# --- HTML transcripts ------------------------------------------------------------
+# Every piece of student, tutor and diagram text goes through _esc() or is
+# base64-encoded into an <img> (where SVG scripts never run), so nothing a
+# student typed or a model produced can execute in the reviewer's browser.
+
+_KATEX = "https://cdn.jsdelivr.net/npm/katex@0.16.47/dist"
+_KATEX_HEAD = f"""<link rel="stylesheet" href="{_KATEX}/katex.min.css"
+  integrity="sha384-nH0MfJ44wi1dd7w6jinlyBgljjS8EJAh2JBoRad8a3VDw2K69vfaaqm4WnR+gXtA" crossorigin="anonymous">
+<script defer src="{_KATEX}/katex.min.js"
+  integrity="sha384-CwjPRVHTvLiMBFjEoij+QZViMV5rhTOIp7CJzl24JEqpRDA1sJFHVXXLURktbYYp" crossorigin="anonymous"></script>
+<script defer src="{_KATEX}/contrib/auto-render.min.js"
+  integrity="sha384-bjyGPfbij8/NDKJhSGZNP/khQVgtHUE5exjm4Ydllo42FwIgYsdLO2lXGmRBf5Mz" crossorigin="anonymous"
+  onload="renderMathInElement(document.body, {{delimiters: [
+    {{left: '$$', right: '$$', display: true}}, {{left: '$', right: '$', display: false}}],
+    throwOnError: false}});"></script>"""
+
+_CSS = """
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #fff; color: #1a1a1a;
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+main { max-width: 820px; margin: 0 auto; padding: 32px 20px 64px; }
+header { border-bottom: 2px solid #1a1a1a; padding-bottom: 12px; margin-bottom: 24px; }
+h1 { font-size: 22px; margin: 0 0 6px; }
+h2 { font-size: 16px; margin: 32px 0 12px; padding-bottom: 4px; border-bottom: 1px solid #ccc; }
+h2 .when { font-weight: normal; color: #555; font-size: 13px; margin-left: 8px; }
+.meta { color: #444; font-size: 13px; margin: 0; }
+.turn { margin: 0 0 18px; break-inside: avoid; page-break-inside: avoid; }
+.msg { border: 1px solid #ddd; border-radius: 8px; padding: 10px 14px; margin: 6px 0; }
+.msg.student { background: #f4f6f8; }
+.who { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: #555; }
+.text { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 2px; }
+.turn-meta { font-size: 12px; color: #555; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.tag { border: 1px solid #bbb; border-radius: 4px; padding: 0 6px; }
+.diagram { margin-top: 10px; break-inside: avoid; page-break-inside: avoid; }
+/* A model SVG often has only a viewBox, so give it a width rather than letting
+   it stretch to the page. */
+.diagram img { display: block; width: 100%; max-width: 560px; height: auto; border: 1px solid #ddd;
+  border-radius: 6px; background: #fff; padding: 6px; margin-top: 6px; }
+.note { font-size: 13px; color: #666; font-style: italic; margin-top: 8px; }
+.error { font-size: 13px; color: #8a1c1c; margin-top: 8px; }
+.check { border-left: 3px solid #888; margin: 6px 0 0 14px; padding: 4px 12px; font-size: 13px;
+  break-inside: avoid; page-break-inside: avoid; }
+.check ul { margin: 4px 0 0; padding-left: 18px; }
+.check .status { font-weight: 600; }
+.check .correct { color: #1d6b2c; } .check .incorrect { color: #8a1c1c; }
+.katex-display { overflow-x: auto; overflow-y: hidden; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #ddd; }
+a { color: #0b4f9c; }
+@page { margin: 16mm 14mm; }
+@media print {
+  main { max-width: none; padding: 0; }
+  .msg.student { background: none; }
+  h2 { break-after: avoid; page-break-after: avoid; }
+  a { color: inherit; text-decoration: none; }
+  .katex-display { overflow: visible; }
+}
+"""
+
+
+def _esc(value) -> str:
+    return html.escape("" if value is None else str(value), quote=True)
+
+
+def _parse_ts(timestamp):
+    try:
+        ts = datetime.fromisoformat(str(timestamp))
+    except ValueError:
+        return None
+    return ts.astimezone(timezone.utc) if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
+def _fmt_ts(timestamp) -> str:
+    ts = _parse_ts(timestamp)
+    return ts.strftime("%Y-%m-%d %H:%M UTC") if ts else str(timestamp or "")
+
+
+def _svg_img(svg: str) -> str:
+    """One <img> per <svg> (a multi-problem DRAW turn concatenates several,
+    which isn't valid as a single image). An SVG loaded as an image needs its
+    namespace declared, which inline-in-HTML SVG from the model often omits."""
+    parts = re.findall(r"<svg\b.*?</svg>", svg, flags=re.S | re.I) or [svg]
+    imgs = []
+    for part in parts:
+        open_tag = re.match(r"<svg\b[^>]*>", part, flags=re.I)
+        if open_tag:
+            tag = open_tag.group(0)
+            new_tag = tag
+            if "xmlns=" not in tag:
+                new_tag = new_tag[:4] + ' xmlns="http://www.w3.org/2000/svg"' + new_tag[4:]
+            if "xlink:" in part and "xmlns:xlink" not in tag:
+                new_tag = new_tag[:4] + ' xmlns:xlink="http://www.w3.org/1999/xlink"' + new_tag[4:]
+            part = new_tag + part[len(tag):]
+        data = base64.b64encode(part.encode("utf-8")).decode("ascii")
+        imgs.append(f'<img src="data:image/svg+xml;base64,{data}" alt="Diagram shown to the student">')
+    return "".join(imgs)
+
+
+def _check_html(check: dict) -> str:
+    items = []
+    for r in check.get("results") or []:
+        status = str(r.get("status") or "")
+        detail = f" &mdash; {_esc(r.get('detail'))}" if r.get("detail") else ""
+        items.append(f'<li><span class="status {_esc(status)}">{_esc(status)}</span>: '
+                     f'<span class="text">{_esc(r.get("line"))}</span>{detail}</li>')
+    when = f" ({_esc(_fmt_ts(check.get('timestamp')))})" if check.get("timestamp") else ""
+    return (f'<div class="check"><div class="who">Show your work check{when}</div>'
+            f'<ul>{"".join(items)}</ul></div>')
+
+
+# A DRAW/SOLVE turn that tried to draw but sent nothing, in reviewer words.
+_NO_DIAGRAM_REASONS = {
+    "parse_failed": "the request could not be parsed",
+    "skipped_no_bodies": "no problem setup was found to draw",
+    "suppressed_placeholder": "the drawing was a placeholder, so it was withheld",
+    "visualizer_failed": "the drawing step failed",
+}
+
+
+def _turn_html(t: dict) -> str:
+    meta = [f"<span>Turn {_esc(t['turn_number'])}</span>",
+            f"<span>{_esc(_fmt_ts(t['timestamp']))}</span>"]
+    if t.get("hint_level") is not None:
+        meta.append(f'<span class="tag">Hint level {_esc(t["hint_level"])}</span>')
+    if t.get("feedback") == "up":
+        meta.append('<span class="tag">Rated &#128077; helpful</span>')
+    elif t.get("feedback") == "down":
+        meta.append('<span class="tag">Rated &#128078; not helpful</span>')
+    if t.get("diagram_svg"):
+        diagram = f'<div class="diagram">{_svg_img(t["diagram_svg"])}</div>'
+    elif t.get("diagram_rendered"):
+        diagram = '<div class="note">(diagram shown, not saved)</div>'
+    elif t.get("diagram_status") in _NO_DIAGRAM_REASONS:
+        diagram = (f'<div class="note">(no diagram sent: '
+                   f'{_NO_DIAGRAM_REASONS[t["diagram_status"]]})</div>')
+    else:
+        diagram = ""
+    error = f'<div class="error">Error: {_esc(t["error"])}</div>' if t.get("error") else ""
+    checks = "".join(_check_html(c) for c in t.get("check_work_entries") or [])
+    return (f'<div class="turn"><div class="turn-meta">{"".join(meta)}</div>'
+            f'<div class="msg student"><div class="who">Student</div>'
+            f'<div class="text">{_esc(t["student_message"])}</div></div>'
+            f'<div class="msg tutor"><div class="who">Tutor</div>'
+            f'<div class="text">{_esc(t["tutor_reply"])}</div>{diagram}{error}</div>'
+            f'{checks}</div>')
+
+
+def _page(title: str, body: str, math: bool) -> str:
+    return (f'<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+            f'<title>{_esc(title)}</title><style>{_CSS}</style>'
+            f'{_KATEX_HEAD if math else ""}</head>\n<body><main>{body}</main></body></html>\n')
+
+
+def _sessions(turns: list[dict]) -> list[list[dict]]:
+    """Turns grouped by session, sessions in time order, turns in turn order."""
+    grouped = defaultdict(list)
+    for t in turns:
+        grouped[t["session_id"]].append(t)
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    sessions = [sorted(ts, key=lambda t: t["turn_number"]) for ts in grouped.values()]
+    return sorted(sessions, key=lambda ts: min(_parse_ts(t["timestamp"]) or epoch for t in ts))
+
+
+def _date_range(turns: list[dict]) -> str:
+    dates = sorted(ts.date() for ts in (_parse_ts(t["timestamp"]) for t in turns) if ts)
+    if not dates:
+        return "unknown dates"
+    return dates[0].isoformat() if dates[0] == dates[-1] else f"{dates[0]} to {dates[-1]}"
+
+
+def _transcript_filename(code: str, taken: set[str]) -> str:
+    base = re.sub(r"[^A-Za-z0-9_-]", "_", code) or "participant"
+    name, n = f"{base}.html", 2
+    while name.lower() in taken or name.lower() == "index.html":
+        name, n = f"{base}_{n}.html", n + 1
+    taken.add(name.lower())
+    return name
+
+
+def write_transcripts(export: dict, out_dir: Path, stamp: str | None = None) -> Path:
+    """One HTML transcript per participant, plus index.html. Returns the folder."""
+    folder = out_dir / f"transcripts_{stamp or _utc_stamp()}"
+    folder.mkdir(parents=True, exist_ok=True)
+    by_code = defaultdict(list)
+    for t in export["turns"]:
+        by_code[t["participant_code"]].append(t)
+
+    rows, taken = [], set()
+    for code in sorted(by_code):
+        turns = by_code[code]
+        sessions = _sessions(turns)
+        summary = (f"{len(sessions)} session{'s' * (len(sessions) != 1)} &middot; "
+                   f"{len(turns)} turn{'s' * (len(turns) != 1)} &middot; {_date_range(turns)}")
+        body = [f"<header><h1>Participant {_esc(code)}</h1><p class=\"meta\">{summary}</p></header>"]
+        for i, session in enumerate(sessions, 1):
+            body.append(f'<section><h2>Session {i}<span class="when">started '
+                        f'{_esc(_fmt_ts(session[0]["timestamp"]))}</span></h2>')
+            body.extend(_turn_html(t) for t in session)
+            body.append("</section>")
+        filename = _transcript_filename(code, taken)
+        (folder / filename).write_text(_page(f"Transcript {code}", "".join(body), math=True),
+                                       encoding="utf-8")
+        rows.append(f'<tr><td><a href="{_esc(filename)}">{_esc(code)}</a></td>'
+                    f"<td>{len(sessions)}</td><td>{len(turns)}</td>"
+                    f"<td>{_esc(_date_range(turns))}</td></tr>")
+
+    since = f" &middot; turns since {_esc(export['since'])}" if export.get("since") else ""
+    index = (f"<header><h1>Pilot transcripts</h1><p class=\"meta\">Exported "
+             f"{_esc(_fmt_ts(export['exported_at']))} &middot; {len(by_code)} participants "
+             f"&middot; {export['turn_count']} turns{since}</p></header>"
+             f"<table><thead><tr><th>Participant</th><th>Sessions</th><th>Turns</th>"
+             f"<th>Dates</th></tr></thead><tbody>{''.join(rows)}</tbody></table>")
+    (folder / "index.html").write_text(_page("Pilot transcripts", index, math=False),
+                                       encoding="utf-8")
+    return folder
 
 
 def main(argv=None) -> int:
@@ -233,13 +477,17 @@ def main(argv=None) -> int:
     parser.add_argument("--state-dir", type=Path, default=BACKEND / "state")
     parser.add_argument("--out-dir", type=Path, default=BACKEND / "exports")
     parser.add_argument("--uploads-dir", type=Path, default=BACKEND / "uploads")
+    parser.add_argument("--no-transcripts", action="store_true",
+                        help="skip the per-participant HTML transcripts")
     args = parser.parse_args(argv)
 
     export = build_export(args.traces_dir,
                           args.state_dir / "feedback.jsonl",
                           args.state_dir / "check_work.jsonl",
                           since=args.since, uploads_dir=args.uploads_dir)
-    csv_path, json_path = write_export(export, args.out_dir)
+    stamp = _utc_stamp()
+    csv_path, json_path = write_export(export, args.out_dir, stamp)
+    transcripts = None if args.no_transcripts else write_transcripts(export, args.out_dir, stamp)
     print(f"{export['turn_count']} turns from {export['participant_count']} participants")
     if export["skipped_without_participant_code"]:
         print(f"skipped {export['skipped_without_participant_code']} turns with no "
@@ -248,6 +496,8 @@ def main(argv=None) -> int:
         print(f"skipped {export['skipped_professor_turns']} of the professor's own turns")
     print(f"CSV:  {csv_path}")
     print(f"JSON: {json_path}")
+    if transcripts:
+        print(f"HTML: {transcripts / 'index.html'}")
     return 0
 
 

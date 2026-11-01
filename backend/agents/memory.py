@@ -97,6 +97,17 @@ class SessionMemory:
         _atomic_write_json(path, record)
         return path
 
+    def read_turn(self, session_id: str, turn_number: int) -> dict | None:
+        """The turn record's ``data`` dict, or None if it isn't there."""
+        path = os.path.join(self._session_dir(session_id), f"{turn_number}.json")
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                record = json.load(fh)
+        except (OSError, ValueError):
+            return None
+        data = record.get("data") if isinstance(record, dict) else None
+        return data if isinstance(data, dict) else None
+
     # ------------------------------------------------------------------ #
     # Errors
     # ------------------------------------------------------------------ #

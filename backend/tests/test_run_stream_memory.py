@@ -23,6 +23,12 @@ class RecordingMemory:
         self.logged_turns.append((session_id, turn_number, data))
         return f"/fake/{session_id}/{turn_number}.json"
 
+    def read_turn(self, session_id, turn_number):
+        for sid, n, data in reversed(self.logged_turns):
+            if (sid, n) == (session_id, turn_number):
+                return data
+        return None
+
     def save_student_model(self, student_id, model):
         self.saved_models.append((student_id, model))
         return f"/fake/{student_id}.json"
@@ -112,3 +118,45 @@ def test_run_stream_meta_student_model_is_what_gets_saved():
     marker_model = {"concept_mastery": {"fbd_construction": 0.42}}
     list(agent.run_stream("draw the FBD", [], marker_model, session_id="s1", student_id="stu1"))
     assert agent.memory.saved_models[-1] == ("stu1", marker_model)
+
+
+_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><line x1="0" y1="0" x2="10" y2="10"/></svg>'
+
+
+def test_run_stream_saves_the_diagram_svg_it_showed():
+    agent = _agent("DRAW")
+    agent.visualizer = lambda parsed, solution: _SVG
+    events = list(agent.run_stream("draw the FBD of a block on an incline", [], {},
+                                   session_id="s1", student_id="stu1"))
+    assert any(e.get("diagram_svg") == _SVG for e in events if e["type"] == "meta")
+    [(_, _, data)] = agent.memory.logged_turns
+    assert data["diagram_rendered"] is True
+    assert data["diagram_svg"] == _SVG
+
+
+def test_run_stream_saves_empty_diagram_svg_when_none_shown():
+    agent = _agent("CONCEPT")
+    list(agent.run_stream("what is torque?", [], {}, session_id="s1", student_id="stu1"))
+    [(_, _, data)] = agent.memory.logged_turns
+    assert data["diagram_rendered"] is False
+    assert data["diagram_svg"] == ""
+
+
+def test_run_saves_the_diagram_svg_it_showed():
+    # The non-streaming /tutor path: the final record carries the same fields.
+    agent = _agent("DRAW")
+    agent.visualizer = lambda parsed, solution: _SVG
+    result = agent.run("draw the FBD of a block on an incline", [], {},
+                       session_id="s1", student_id="stu1")
+    assert result["diagram_svg"] == _SVG
+    _, _, data = agent.memory.logged_turns[-1]
+    assert data["diagram_rendered"] is True
+    assert data["diagram_svg"] == _SVG
+    assert "visualizer" in data["agents"]  # per-agent trace is still there
+
+
+def test_run_saves_empty_diagram_svg_when_none_shown():
+    agent = _agent("CONCEPT")
+    agent.run("what is torque?", [], {}, session_id="s1", student_id="stu1")
+    _, _, data = agent.memory.logged_turns[-1]
+    assert data["diagram_rendered"] is False and data["diagram_svg"] == ""
