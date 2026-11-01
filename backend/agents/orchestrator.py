@@ -349,6 +349,19 @@ Return ONLY the JSON."""
 
 VISUALIZER_PROMPT = """You are an expert technical illustrator. Given a physics problem and its solution, draw an accurate, clean, readable SVG diagram. Include: the body/mechanism exactly as described, all forces/reactions with correct labels and directions, support symbols if applicable, and a coordinate system indicator. Output ONLY valid SVG code starting with <svg and ending with </svg>. Use standard physics diagram conventions and a white background.
 
+WHAT TO DRAW
+- "draw_request", when present, is the student's own words for what they want
+  to see.
+- If the parsed problem has a "draw_focus" naming bodies, draw ONLY those
+  bodies, each isolated as its own free body with only the forces acting on
+  it (a rope becomes its tension arrow; a surface becomes its normal and
+  friction arrows). Do not draw the other bodies or the rest of the mechanism.
+- If the parsed problem has no bodies, is marked "unclear", or you cannot tell
+  what setup to draw, output exactly
+  <svg xmlns="http://www.w3.org/2000/svg" data-diagram="none"></svg>
+  and nothing else. Never draw a placeholder, an empty outline, or a message
+  asking the student to restate the problem.
+
 Keep the SVG compact: no comments, no unnecessary groups or decimals beyond 1 place, reuse arrowhead markers via <defs>.
 
 LAYOUT PROCESS (plan all coordinates before emitting any SVG)
@@ -489,6 +502,7 @@ HARD RULES:
 - Never invent physics content. If the Planner didn't provide it, don't add it.
 - If the student asks something outside 2D dynamics, say so gently and offer to stay on topic.
 - Never output SVG, HTML, or diagram code. If a diagram was rendered, it is displayed to the student separately; refer to it in words only.
+- DIAGRAM HONESTY: the "visualization" object says whether a diagram is actually shown. Only when visualization.diagram_rendered is true may you refer to a diagram ("here's the diagram", "in the diagram"). When it is false or missing, never say or imply that a diagram, picture, or sketch is shown, attached, above, or below. If the student asked for a diagram (plan.decision is DRAW) and none was rendered, say briefly that the picture couldn't be drawn this time, then describe the free-body diagram in words: each force on the body they asked about, its direction, and its value if it is given. Then ask them to sketch it. If the problem itself isn't clear from the conversation, ask them to restate it instead.
 - VERIFICATION HONESTY: If a "validation" object is present and its overall_verdict is NOT "PASS" (i.e. FAIL, UNCERTAIN, or missing), do NOT present the solver's numeric answer as confirmed. Share the setup and approach, state plainly that the result could not be independently verified and may be wrong, and ask the student to double-check it. Do not give a definitive final number in this case. When overall_verdict is "PASS", present the answer normally.
 
 FORMATTING:
@@ -644,9 +658,14 @@ class OrchestratorAgent:
     # Individual agents
     # -----------------------------------------------------------------------
 
-    def input_parser(self, message: str, conversation_history: list) -> dict:
+    def input_parser(self, message: str, conversation_history: list,
+                     extra_context: str = "") -> dict:
+        """extra_context: task-specific instructions placed just before the
+        latest message (the DRAW path's, see _draw_parse_context). The
+        system prompt stays the same for every caller."""
         history_text = _format_history(conversation_history)
-        user_content = f"Conversation so far:\n{history_text}\n\nStudent's latest message:\n{message}"
+        user_content = (f"Conversation so far:\n{history_text}\n\n{extra_context}"
+                        f"Student's latest message:\n{message}")
 
         response = self.client.messages.create(
             model=HAIKU_MODEL,
@@ -878,7 +897,88 @@ class OrchestratorAgent:
         return _parse_json(extract_text(response))
     
     
-        
+    def _problem_turn_input(self, parse_message: str, conversation_history: list,
+                            hint_level: int | None, active_problem: dict | None) -> dict:
+        """parsed_input for a PROBLEM turn. A Hint-button tap carries a canned
+        message ("Can I get a hint?"), not a problem, so it continues the
+        problem in play: the active problem when the browser sent a usable
+        one (the same object /check-work uses, so the solution cache lines
+        up), otherwise a parse told to resolve the follow-up."""
+        if hint_level is not None:
+            active = _clean_active_problem(active_problem)
+            if active is not None:
+                return active
+            return self.input_parser(parse_message, conversation_history,
+                                     extra_context=_HINT_PARSE_CONTEXT)
+        return self.input_parser(parse_message, conversation_history)
+
+    def _recent_created_problems(self, session_id: str, turn_number: int,
+                                 lookback: int = 3) -> list:
+        """The Creator's problems from the most recent CREATE turn among the
+        last `lookback` turns of this session, as [{"statement": ...}].
+        Read from the saved turn records, so "draw all of them" draws exactly
+        what was generated, never lines of an ordinary tutor reply."""
+        read_turn = getattr(self.memory, "read_turn", None)
+        if read_turn is None:
+            return []
+        for n in range(turn_number - 1, max(turn_number - 1 - lookback, -1), -1):
+            try:
+                data = read_turn(session_id, n)
+            except Exception:
+                data = None
+            if not isinstance(data, dict) or data.get("route") != "CREATE":
+                continue
+            statements = data.get("created_problems")
+            if statements is None:  # a run() record keeps the Creator's raw output
+                agents = data.get("agents") if isinstance(data.get("agents"), dict) else {}
+                statements = _created_statements(agents.get("creator"))
+            return [{"statement": st} for st in statements or [] if isinstance(st, str) and st]
+        return []
+
+    def _parse_and_draw(self, parse_message: str, draw_request: str, route_decision: dict,
+                        conversation_history: list, active_problem: dict | None,
+                        log=None) -> tuple[dict, str, str]:
+        """The single-diagram DRAW step shared by run() and run_stream():
+        parse what to draw, draw it, and screen the result.
+
+        Returns (parsed_input, diagram_svg, diagram_status). diagram_svg is
+        "" unless diagram_status is "drawn".
+
+        A message the Router marked self_contained is parsed on its own first,
+        so a brand-new problem is never merged with an older one. If that
+        parse finds no bodies, the Router misjudged a follow-up ("draw the FBD
+        for the hanging block"), so it is parsed again with the conversation
+        and the active problem. Never draws without bodies to draw.
+        """
+        log = log or (lambda name, output: None)
+        scope = (route_decision or {}).get("problem_scope")
+        parsed_input = None
+        if scope == "self_contained":
+            parsed_input = self.input_parser(parse_message, [],
+                                             extra_context=_draw_parse_context(None))
+            log("input_parser", parsed_input)
+            if ("parse_error" not in parsed_input and not _has_bodies(parsed_input)
+                    and (conversation_history or active_problem)):
+                logger.info("self_contained DRAW parse found no bodies; "
+                            "re-parsing with the conversation")
+                parsed_input = None
+        if parsed_input is None:
+            parsed_input = self.input_parser(parse_message, conversation_history or [],
+                                             extra_context=_draw_parse_context(active_problem))
+            log("input_parser_with_history" if scope == "self_contained" else "input_parser",
+                parsed_input)
+
+        if "parse_error" in parsed_input:
+            logger.warning("input_parser failed to parse the DRAW request; skipping visualizer")
+            return parsed_input, "", "parse_failed"
+        if not _has_bodies(parsed_input):
+            logger.info("DRAW parse has no bodies; skipping visualizer")
+            return parsed_input, "", "skipped_no_bodies"
+        raw_svg = self.visualizer({**parsed_input, "draw_request": draw_request}, None)
+        log("visualizer", raw_svg)
+        diagram_svg, status = _screen_svg(raw_svg)
+        return parsed_input, diagram_svg, status
+
     def conversationalist(
         self,
         student_message: str,
@@ -940,7 +1040,7 @@ class OrchestratorAgent:
 
     def run(self, message: str, conversation_history: list, student_model: dict,
             session_id: str | None = None, student_id: str | None = None,
-            hint_level: int | None = None) -> dict:
+            hint_level: int | None = None, active_problem: dict | None = None) -> dict:
         """
         Orchestrate one tutoring turn with file-based session memory.
 
@@ -953,6 +1053,10 @@ class OrchestratorAgent:
         hint_level (pilot item 7): when set (1-4), this is an explicit
         Hint-button tap, not a message needing the Router/Planner's own
         judgment — see _run_turn for how it's handled deterministically.
+
+        active_problem: the parsed problem the frontend keeps for this
+        conversation (the one it sends to /check-work). A DRAW follow-up uses
+        it when the problem statement is older than the history window.
         """
         session_id = session_id or _new_session_id()
         student_id = student_id or "default"
@@ -964,10 +1068,15 @@ class OrchestratorAgent:
         except Exception:
             pass
 
+        # Created here, not in _run_turn, so the diagram the student was
+        # actually shown (known only once the turn returns) can be added below.
+        turn_record: dict = {"participant_code": student_id, "message": message,
+                             "hint_level": hint_level, "agents": {}}
         try:
             result = self._run_turn(
                 message, conversation_history, student_model,
                 session_id, student_id, turn_number, hint_level=hint_level,
+                turn_record=turn_record, active_problem=active_problem,
             )
         except DailyLimitReached:
             # Caught specifically, before the generic handler below, so the
@@ -1011,6 +1120,18 @@ class OrchestratorAgent:
                 "low_confidence": True,
             }
 
+        # Same diagram fields as run_stream()'s record: whether a diagram
+        # was shown, and its SVG. Skipped if the turn never logged anything.
+        if turn_record["agents"]:
+            shown_svg = result.get("diagram_svg") or ""
+            turn_record["diagram_rendered"] = bool(shown_svg)
+            turn_record["diagram_svg"] = shown_svg
+            turn_record["diagram_status"] = result.get("diagram_status") or "not_attempted"
+            try:
+                self.memory.log_turn(session_id, turn_number, turn_record)
+            except Exception:
+                pass
+
         # Persist the student model at the end of every turn.
         try:
             self.memory.save_student_model(
@@ -1031,7 +1152,8 @@ class OrchestratorAgent:
 
     def _run_turn(self, message: str, conversation_history: list, student_model: dict,
                   session_id: str, student_id: str, turn_number: int,
-                  hint_level: int | None = None) -> dict:
+                  hint_level: int | None = None, turn_record: dict | None = None,
+                  active_problem: dict | None = None) -> dict:
         """
         Router-as-orchestrator. The Router classifies the message, then the MCO
         dispatches one of five route-specific agent pipelines. Every agent's
@@ -1056,8 +1178,9 @@ class OrchestratorAgent:
         the Router call outright — one fewer API call, and no risk of the
         Router misclassifying a plain "can I get a hint?"-style message.
         """
-        turn_record: dict = {"participant_code": student_id, "message": message,
-                             "hint_level": hint_level, "agents": {}}
+        if turn_record is None:
+            turn_record = {"participant_code": student_id, "message": message,
+                           "hint_level": hint_level, "agents": {}}
 
         def _log(agent_name: str, output) -> None:
             # Accumulate into a single {turn}.json, rewritten after each agent.
@@ -1079,6 +1202,8 @@ class OrchestratorAgent:
             route_decision = self.router(message, conversation_history)
         route = route_decision.get("route", "PROBLEM")
         turn_record["route"] = route
+        # Saved so the export shows why a DRAW turn did or didn't see history.
+        turn_record["problem_scope"] = route_decision.get("problem_scope")
         _log("router", route_decision)
 
         # ---------- CONCEPT / SMALLTALK / OUT_OF_SCOPE: single Direct Tutor ----------
@@ -1102,7 +1227,8 @@ class OrchestratorAgent:
         # ---------- DRAW: Input Parser -> Visualizer (SVG)
         #            -> Conversationalist ----------
         if route == "DRAW":
-            if _draw_needs_clarification(route_decision, conversation_history):
+            active_problem = _clean_active_problem(active_problem)
+            if _draw_needs_clarification(route_decision, conversation_history, active_problem):
                 _log("draw_clarify", {"response": DRAW_NEEDS_CLARIFICATION_MESSAGE})
                 return {
                     "response": DRAW_NEEDS_CLARIFICATION_MESSAGE,
@@ -1117,49 +1243,31 @@ class OrchestratorAgent:
                     "route_decision": route_decision,
                     "low_confidence": False,
                 }
-            parsed_input = self.input_parser(
-                message, _draw_history(route_decision, conversation_history)
-            )
-            _log("input_parser", parsed_input)
-
-            # A failed parse must not be handed to the visualizer — it can
-            # only guess at a diagram from a broken {"parse_error": ...,
-            # "raw_response": ...} dict, which is worse than no diagram at
-            # all. Skip drawing; svg_ok stays False, which is the same
-            # signal already used for a genuinely failed visualizer call.
-            if "parse_error" in parsed_input:
-                logger.warning(
-                    "input_parser failed to parse the DRAW request; skipping visualizer"
-                )
-                diagram_svg = ""
-                svg_ok = False
-            else:
-                diagram_svg = self.visualizer(parsed_input, None)
-                _log("visualizer", diagram_svg)
-                # The visualizer now returns SVG directly, so validation is a
-                # light non-empty / well-formed check rather than
-                # FBD-structure checking.
-                svg_ok = _svg_is_valid(diagram_svg)
+            parsed_input, diagram_svg, diagram_status = self._parse_and_draw(
+                message, message, route_decision, conversation_history, active_problem, _log)
+            svg_ok = diagram_status == "drawn"
             validation = {
                 "task": "VALIDATE_SVG",
-                "non_empty": bool(diagram_svg.strip()),
-                "well_formed": svg_ok,
+                "diagram_status": diagram_status,
                 "overall_verdict": "PASS" if svg_ok else "FAIL",
             }
             _log("validator", validation)
-            low_confidence = not svg_ok
 
             plan = {"decision": "DRAW"}
-            response_text = self.conversationalist(
-                student_message=message,
-                parsed_input=parsed_input,
-                student_model=student_model,
-                plan=plan,
-                solution=None,
-                validation=validation,
-                visualization=_diagram_status(svg_ok),
-                conversation_history=conversation_history,
-            )
+            if diagram_status in ("parse_failed", "skipped_no_bodies"):
+                # Nothing to draw or describe: a fixed reply, no model call.
+                response_text = DRAW_NO_PROBLEM_MESSAGE
+            else:
+                response_text = self.conversationalist(
+                    student_message=message,
+                    parsed_input=parsed_input,
+                    student_model=student_model,
+                    plan=plan,
+                    solution=None,
+                    validation=validation,
+                    visualization=_diagram_status(svg_ok, diagram_status),
+                    conversation_history=conversation_history,
+                )
             _log("conversationalist", {"response": response_text})
             return {
                 "response": response_text,
@@ -1168,11 +1276,12 @@ class OrchestratorAgent:
                 "solution": None,
                 "validation": validation,
                 "visualization": diagram_svg,
-                "diagram_svg": diagram_svg if svg_ok else "",
+                "diagram_svg": diagram_svg,
+                "diagram_status": diagram_status,
                 "parsed_input": parsed_input,
                 "route": route,
                 "route_decision": route_decision,
-                "low_confidence": low_confidence,
+                "low_confidence": not svg_ok,
             }
 
         # ---------- CREATE: Modeler -> Planner -> Identifier (Student Modeler
@@ -1231,7 +1340,8 @@ class OrchestratorAgent:
             # 5. Visualizer: draw the Creator's output directly as SVG.
             diagram_svg = self.visualizer(create_context, created)
             _log("visualizer", diagram_svg)
-            svg_ok = _svg_is_valid(diagram_svg)
+            diagram_svg, diagram_status = _screen_svg(diagram_svg)
+            svg_ok = diagram_status == "drawn"
 
             # 6. Validator: validate the Creator's problems only. The visualizer
             #    now returns SVG (not structured JSON), so FBD-structure
@@ -1254,7 +1364,7 @@ class OrchestratorAgent:
                 plan=plan,
                 solution=created,
                 validation=validation,
-                visualization=_diagram_status(svg_ok),
+                visualization=_diagram_status(svg_ok, diagram_status),
                 conversation_history=conversation_history,
             )
             _log("conversationalist", {"response": response_text})
@@ -1270,7 +1380,8 @@ class OrchestratorAgent:
                 "solution": created,
                 "validation": validation,
                 "visualization": diagram_svg,
-                "diagram_svg": diagram_svg if svg_ok else "",
+                "diagram_svg": diagram_svg,
+                "diagram_status": diagram_status,
                 "parsed_input": create_context,
                 "route": route,
                 "route_decision": route_decision,
@@ -1280,7 +1391,8 @@ class OrchestratorAgent:
         # ---------- PROBLEM (default): Input Parser -> Student Modeler -> Pedagogical
         #            Planner -> (if SOLVE: Solver[retry] -> Validator -> Visualizer)
         #            -> Conversationalist ----------
-        parsed_input = self.input_parser(message, conversation_history)
+        parsed_input = self._problem_turn_input(message, conversation_history,
+                                                hint_level, active_problem)
         _log("input_parser", parsed_input)
 
         updated_student_model = self._student_modeler_safe(
@@ -1300,6 +1412,7 @@ class OrchestratorAgent:
         validation = None
         visualization = None
         diagram_svg = ""
+        diagram_status = "not_attempted"
         svg_ok = False
         low_confidence = False
 
@@ -1309,8 +1422,8 @@ class OrchestratorAgent:
             )
             visualization = self.visualizer(parsed_input, solution)
             _log("visualizer", visualization)
-            svg_ok = _svg_is_valid(visualization)
-            diagram_svg = visualization if svg_ok else ""
+            diagram_svg, diagram_status = _screen_svg(visualization)
+            svg_ok = diagram_status == "drawn"
 
         response_text = self.conversationalist(
             student_message=message,
@@ -1319,7 +1432,7 @@ class OrchestratorAgent:
             plan=plan,
             solution=solution,
             validation=validation,
-            visualization=_diagram_status(svg_ok),
+            visualization=_diagram_status(svg_ok, diagram_status),
             conversation_history=conversation_history,
         )
         _log("conversationalist", {"response": response_text})
@@ -1332,6 +1445,7 @@ class OrchestratorAgent:
             "validation": validation,
             "visualization": visualization,
             "diagram_svg": diagram_svg if plan.get("decision") == "SOLVE" else "",
+            "diagram_status": diagram_status,
             "parsed_input": parsed_input,
             "route": route,
             "route_decision": route_decision,
@@ -1441,9 +1555,12 @@ class OrchestratorAgent:
 
     def run_stream(self, message: str, conversation_history: list, student_model: dict,
                    source_text: str = "", session_id: str | None = None,
-                   student_id: str | None = None, hint_level: int | None = None):
+                   student_id: str | None = None, hint_level: int | None = None,
+                   active_problem: dict | None = None):
         """Streaming variant of run() — with the same server-side memory
         guarantee as run(): every turn logged, the student model saved.
+
+        active_problem: see run().
 
         hint_level (pilot item 7): an explicit Hint-button tap — see
         _run_stream_events for how it's handled deterministically.
@@ -1474,15 +1591,23 @@ class OrchestratorAgent:
         route = None
         decision = None
         diagram_svg = ""
+        # Filled from the pipeline's internal "trace" events (never sent on).
+        trace = {"problem_scope": None, "diagram_status": "not_attempted",
+                 "parsed_input": None, "created_problems": None}
+        created_problems = self._recent_created_problems(session_id, turn_number)
         response_parts: list[str] = []
         error_text: str | None = None
 
         try:
             for event in self._run_stream_events(
                 message, conversation_history, student_model, source_text,
-                hint_level=hint_level,
+                hint_level=hint_level, active_problem=active_problem,
+                created_problems=created_problems,
             ):
                 etype = event.get("type")
+                if etype == "trace":
+                    trace.update({k: v for k, v in event.items() if k in trace})
+                    continue
                 if etype == "meta":
                     final_student_model = event.get("student_model", final_student_model)
                     route = event.get("route", route)
@@ -1531,6 +1656,17 @@ class OrchestratorAgent:
                     "decision": decision,
                     "response_text": "".join(response_parts),
                     "diagram_rendered": bool(diagram_svg),
+                    # The SVG itself, so researchers can see exactly what
+                    # diagram the student was shown.
+                    "diagram_svg": diagram_svg or "",
+                    # Why the DRAW parse did or didn't use history, and why a
+                    # diagram was or wasn't sent (see _parse_and_draw).
+                    "problem_scope": trace["problem_scope"],
+                    "diagram_status": trace["diagram_status"],
+                    # The problem this turn worked on, and on a CREATE turn the
+                    # problems generated (what "draw all of them" draws later).
+                    "parsed_input": trace["parsed_input"],
+                    "created_problems": trace["created_problems"],
                     "error": error_text,
                 })
             except Exception:
@@ -1541,12 +1677,17 @@ class OrchestratorAgent:
                 pass
 
     def _run_stream_events(self, message: str, conversation_history: list, student_model: dict,
-                   source_text: str = "", hint_level: int | None = None):
+                   source_text: str = "", hint_level: int | None = None,
+                   active_problem: dict | None = None,
+                   created_problems: list | None = None):
         """Streaming variant of run()'s pipeline. Generator yielding event dicts:
             {"type":"status","text":...}  progress during the silent pipeline phase
             {"type":"meta", ...}          one-shot: student_model, route, decision, diagram_image
             {"type":"token","text":...}   incremental text of the final agent
             {"type":"done"}
+            {"type":"trace", ...}         problem_scope / diagram_status for the
+                                          turn record; run_stream() keeps these
+                                          and never forwards them
         Only the FINAL agent is streamed; upstream agents return JSON we need whole,
         so we emit status lines while they run. NOTE: mirrors run()'s control flow —
         keep the two in sync until we refactor the shared part out (tech debt).
@@ -1582,6 +1723,7 @@ class OrchestratorAgent:
         else:
             route_decision = self.router(message, conversation_history)
         route = route_decision.get("route", "PROBLEM")
+        yield {"type": "trace", "problem_scope": route_decision.get("problem_scope")}
 
         # Labeled prior-conversation block, injected into the FINAL response
         # agents (direct_tutor + conversationalist) so the reply has
@@ -1589,9 +1731,9 @@ class OrchestratorAgent:
         convo = _conversation_block(conversation_history)
 
         if route == "DRAW":
-            wants_multi = any(w in message.lower() for w in ("these", "them", "those", "all", "each"))
-            created_problems = _find_recent_created(conversation_history)
-            if wants_multi and created_problems:
+            # created_problems: what the Creator produced on a recent CREATE
+            # turn (run_stream() reads it from the session's turn records).
+            if _MULTI_DRAW_RE.search(message) and created_problems:
                 # Draw each created problem directly as SVG (unsolved) and
                 # concatenate the markup — multiple <svg> blocks render stacked.
                 svgs = []
@@ -1600,16 +1742,17 @@ class OrchestratorAgent:
                     if not stmt:
                         continue
                     parsed_p = self.input_parser(stmt, [])
-                    if "parse_error" in parsed_p:
+                    if not _has_bodies(parsed_p):
                         logger.warning(
-                            "input_parser failed to parse a created problem for DRAW; "
+                            "created problem for DRAW did not parse to any bodies; "
                             "skipping visualizer for it"
                         )
                         continue
-                    svg_p = self.visualizer(parsed_p, None)
-                    if _svg_is_valid(svg_p):
+                    svg_p, _ = _screen_svg(self.visualizer(parsed_p, None))
+                    if svg_p:
                         svgs.append(svg_p)
                 if svgs:
+                    yield {"type": "trace", "diagram_status": "drawn"}
                     yield {"type": "meta", "student_model": student_model, "route": route,
                            "decision": "DRAW", "diagram_svg": "\n".join(svgs)}
                     yield {"type": "token", "text": ("Here are the setups for each problem, drawn "
@@ -1617,50 +1760,44 @@ class OrchestratorAgent:
                     yield {"type": "done"}
                     return
 
-            if _draw_needs_clarification(route_decision, conversation_history):
+            active_problem = _clean_active_problem(active_problem)
+            if _draw_needs_clarification(route_decision, conversation_history, active_problem):
                 yield {"type": "meta", "student_model": student_model, "route": route,
                        "decision": "CLARIFY", "diagram_svg": ""}
                 yield {"type": "token", "text": DRAW_NEEDS_CLARIFICATION_MESSAGE}
                 yield {"type": "done"}
                 return
 
-            # Single-diagram DRAW mirrors run(): Input Parser -> Visualizer (SVG)
-            # -> Conversationalist. The visualizer draws SVG directly.
+            # Single-diagram DRAW mirrors run(): the shared parse-and-draw step,
+            # then the Conversationalist, told whether a diagram was sent.
             yield {"type": "status", "text": "Sketching the setup…"}
-            parsed_input = self.input_parser(
-                message + source_block, _draw_history(route_decision, conversation_history)
-            )
-
-            # A failed parse must not be handed to the visualizer — see the
-            # matching guard in run(). svg_ok stays False (skips drawing)
-            # exactly as it would for a genuinely failed visualizer call.
-            if "parse_error" in parsed_input:
-                logger.warning(
-                    "input_parser failed to parse the DRAW request; skipping visualizer"
-                )
-                diagram_svg = ""
-            else:
-                diagram_svg = self.visualizer(parsed_input, None)
-
-            # Lightweight non-empty / well-formed SVG check (no FBD-structure
-            # validation, since the output is SVG rather than structured JSON).
-            svg_ok = _svg_is_valid(diagram_svg)
+            parsed_input, diagram_svg, diagram_status = self._parse_and_draw(
+                message + source_block, message, route_decision, conversation_history,
+                active_problem)
+            svg_ok = diagram_status == "drawn"
             validation = {
                 "task": "VALIDATE_SVG",
-                "non_empty": bool(diagram_svg.strip()),
-                "well_formed": svg_ok,
+                "diagram_status": diagram_status,
                 "overall_verdict": "PASS" if svg_ok else "FAIL",
             }
-            logger.info("DRAW visualizer output (svg_ok=%s): %s", svg_ok, diagram_svg[:500])
-            logger.info("DRAW validation: %s", validation)
+            logger.info("DRAW diagram_status=%s", diagram_status)
+            yield {"type": "trace", "diagram_status": diagram_status,
+                   "parsed_input": parsed_input}
 
             yield {"type": "meta", "student_model": student_model, "route": route,
-                   "decision": "DRAW", "diagram_svg": diagram_svg if svg_ok else ""}
+                   "decision": "DRAW", "diagram_svg": diagram_svg}
+
+            if diagram_status in ("parse_failed", "skipped_no_bodies"):
+                # Nothing to draw or describe: a fixed reply, no model call.
+                yield {"type": "token", "text": DRAW_NO_PROBLEM_MESSAGE}
+                yield {"type": "done"}
+                return
 
             context_bundle = {
                 "student_message": message, "parsed_input": parsed_input,
                 "student_model": student_model, "plan": {"decision": "DRAW"},
-                "solution": None, "validation": validation, "visualization": _diagram_status(svg_ok),
+                "solution": None, "validation": validation,
+                "visualization": _diagram_status(svg_ok, diagram_status),
                 "source_documents": source_block,
             }
             user_content = f"{convo}Context bundle:\n{json.dumps(context_bundle, indent=2)}"
@@ -1719,20 +1856,23 @@ class OrchestratorAgent:
 
             # Visualizer draws the Creator's output directly as SVG. The
             # Validator checks the created problems only (SVG isn't structured).
-            diagram_svg = self.visualizer(create_context, created)
-            svg_ok = _svg_is_valid(diagram_svg)
+            diagram_svg, diagram_status = _screen_svg(self.visualizer(create_context, created))
+            svg_ok = diagram_status == "drawn"
             validation = self.validator(
                 create_context,
                 {"created_problems": created},
             )
 
+            yield {"type": "trace", "diagram_status": diagram_status,
+                   "created_problems": _created_statements(created)}
             yield {"type": "meta", "student_model": updated_student_model, "route": route,
-                   "decision": "CREATE", "diagram_svg": diagram_svg if svg_ok else ""}
+                   "decision": "CREATE", "diagram_svg": diagram_svg}
 
             context_bundle = {
                 "student_message": message, "parsed_input": create_context,
                 "student_model": updated_student_model, "plan": plan,
-                "solution": created, "validation": validation, "visualization": _diagram_status(svg_ok),
+                "solution": created, "validation": validation,
+                "visualization": _diagram_status(svg_ok, diagram_status),
                 "source_documents": source_block,
             }
             user_content = f"{convo}Context bundle:\n{json.dumps(context_bundle, indent=2)}"
@@ -1762,7 +1902,9 @@ class OrchestratorAgent:
 
         # PROBLEM path
         yield {"type": "status", "text": "Reading the problem\u2026"}
-        parsed_input = self.input_parser(message + source_block, conversation_history)
+        parsed_input = self._problem_turn_input(message + source_block, conversation_history,
+                                                hint_level, active_problem)
+        yield {"type": "trace", "parsed_input": parsed_input}
         updated_student_model = self._student_modeler_safe(
             parsed_input, student_model, conversation_history, fallback=student_model
         )
@@ -1778,6 +1920,7 @@ class OrchestratorAgent:
 
         solution = validation = visualization = None
         diagram_svg = ""
+        diagram_status = "not_attempted"
         svg_ok = False
         if plan.get("decision") == "SOLVE":
             yield {"type": "status", "text": "Solving\u2026"}
@@ -1788,22 +1931,29 @@ class OrchestratorAgent:
                 solution_cache.remember(parsed_input, solution)
             yield {"type": "status", "text": "Drawing the diagram\u2026"}
             visualization = self.visualizer(parsed_input, solution)
-            svg_ok = _svg_is_valid(visualization)
-            diagram_svg = visualization if svg_ok else ""
+            diagram_svg, diagram_status = _screen_svg(visualization)
+            svg_ok = diagram_status == "drawn"
+            yield {"type": "trace", "diagram_status": diagram_status}
 
         # meta BEFORE tokens so the frontend can attach diagram + student_model first.
         # parsed_input/solution are handed back verbatim (item 9's check-work feature
         # needs them to build known_values without any new LLM call — see
         # agents/work_checker.build_known_values) — no new agent call, this is the
         # same data already computed a few lines above for this exact turn.
+        # Only a complete problem goes back: the browser replaces the problem it
+        # keeps for show-your-work (and sends back as active_problem) with
+        # whatever arrives here, so a follow-up's partial parse ("I think
+        # T = 58.9 N") must not.
         yield {"type": "meta", "student_model": updated_student_model, "route": route,
             "decision": plan.get("decision", "UNKNOWN"), "diagram_svg": diagram_svg,
-            "parsed_input": parsed_input, "solution": solution}
+            "parsed_input": parsed_input if _is_full_problem(parsed_input) else None,
+            "solution": solution}
 
         context_bundle = {
             "student_message": message, "parsed_input": parsed_input,
             "student_model": updated_student_model, "plan": plan,
-            "solution": solution, "validation": validation, "visualization": _diagram_status(svg_ok),
+            "solution": solution, "validation": validation,
+            "visualization": _diagram_status(svg_ok, diagram_status),
             "source_documents": source_block,
         }
         user_content = f"{convo}Context bundle:\n{json.dumps(context_bundle, indent=2)}"
@@ -1879,9 +2029,124 @@ DRAW_NEEDS_CLARIFICATION_MESSAGE = (
 )
 
 
-def _draw_needs_clarification(route_decision: dict, conversation_history: list) -> bool:
+def _draw_needs_clarification(route_decision: dict, conversation_history: list,
+                              active_problem: dict | None = None) -> bool:
     scope = (route_decision or {}).get("problem_scope")
-    return scope == "referential" and not conversation_history
+    return scope == "referential" and not conversation_history and not active_problem
+
+
+# --- DRAW: what to parse, and what counts as a diagram ------------------------
+# Sent instead of a model reply when a DRAW request has nothing drawable even
+# after looking at the conversation and the active problem. Fixed text, so it
+# can never claim a picture that isn't there.
+DRAW_NO_PROBLEM_MESSAGE = (
+    "I couldn't tell which setup to draw from what I have, so I haven't drawn "
+    "anything. Could you paste the problem again, or describe the bodies, "
+    "supports, and loads? Then I'll sketch it."
+)
+
+# The active problem the frontend sends back (the same parsed problem it keeps
+# for show-your-work). Larger than this is not a real parsed problem.
+_MAX_ACTIVE_PROBLEM_CHARS = 20000
+
+
+def _has_bodies(parsed_input) -> bool:
+    """True if the parsed problem names at least one body to draw."""
+    if not isinstance(parsed_input, dict) or "parse_error" in parsed_input:
+        return False
+    scenario = parsed_input.get("scenario")
+    bodies = scenario.get("bodies") if isinstance(scenario, dict) else None
+    return isinstance(bodies, list) and any(isinstance(b, dict) and b for b in bodies)
+
+
+def _is_full_problem(parsed_input) -> bool:
+    """A complete problem the browser may keep as its active problem — not a
+    follow-up the parser marked "unclear", and with bodies to work on."""
+    return _has_bodies(parsed_input) and parsed_input.get("problem_type") != "unclear"
+
+
+def _created_statements(created) -> list:
+    """The problem statements in a Creator response."""
+    problems = created.get("problems") if isinstance(created, dict) else None
+    return [p["statement"] for p in problems or []
+            if isinstance(p, dict) and isinstance(p.get("statement"), str) and p["statement"]]
+
+
+# "Draw all of them" and similar ask for every recently generated problem.
+# Whole words only: "ball", "wall", "small" and "theme" don't count.
+_MULTI_DRAW_RE = re.compile(r"\b(all|each|every|these|those|them|both)\b", re.IGNORECASE)
+
+# Parse instructions for a Hint-button turn with no usable active problem.
+_HINT_PARSE_CONTEXT = (
+    "TASK: the student pressed the Hint button. The latest message is a canned "
+    "request for a hint on the problem they are working on, not a problem "
+    "itself. Parse that problem in full from the conversation (every body, "
+    "connection, and given). Do not return problem_type \"unclear\" for this "
+    "follow-up. Only if no problem is described anywhere, return problem_type "
+    "\"unclear\" with scenario.bodies = [].\n\n"
+)
+
+
+def _clean_active_problem(active_problem) -> dict | None:
+    """The client-sent active problem, or None if it isn't a usable one."""
+    if not _has_bodies(active_problem):
+        return None
+    try:
+        size = len(json.dumps(active_problem))
+    except (TypeError, ValueError):
+        return None
+    return active_problem if size <= _MAX_ACTIVE_PROBLEM_CHARS else None
+
+
+def _draw_parse_context(active_problem: dict | None) -> str:
+    """Instructions for parsing a DRAW request. INPUT_PARSER_PROMPT tells the
+    parser to return "unclear" for a follow-up, which is right for a PROBLEM
+    turn but drops the problem on "draw the FBD for the hanging block"."""
+    text = (
+        "TASK: the student wants a diagram.\n"
+        "- If the latest message states its own complete setup, parse ONLY the "
+        "latest message and ignore earlier problems.\n"
+        "- If it refers to a setup from earlier (\"draw it\", \"the hanging "
+        "block\", \"block B\", \"that beam\", \"the FBD\"), parse that earlier "
+        "problem in full (every body, connection, and given). Do not return "
+        "problem_type \"unclear\" for such a follow-up.\n"
+        "- Add \"draw_focus\": null to draw the whole setup, or "
+        "{\"bodies\": [\"B\"], \"description\": \"the hanging 6 kg block alone\"} "
+        "when the student asks for only part of it.\n"
+        "- Only if no setup is described anywhere, return problem_type "
+        "\"unclear\" with scenario.bodies = [].\n\n"
+    )
+    if active_problem:
+        text += ("ACTIVE PROBLEM (parsed earlier in this conversation; it may be "
+                 "older than the conversation shown above):\n"
+                 f"{json.dumps(active_problem, indent=2)}\n\n")
+    return text
+
+
+# Placeholder output from an older visualizer prompt, before it had a way to
+# say "nothing to draw". Checked only inside <text> elements.
+_PLACEHOLDER_PHRASES = (
+    "restate the problem", "please restate", "no problem geometry",
+    "no problem statement", "placeholder", "not enough information to draw",
+)
+_SVG_TEXT_RE = re.compile(r"<text\b[^>]*>([\s\S]*?)</text>", re.IGNORECASE)
+
+
+def _is_placeholder_svg(svg: str) -> bool:
+    if 'data-diagram="none"' in svg:
+        return True
+    labels = " ".join(re.sub(r"<[^>]+>", " ", t) for t in _SVG_TEXT_RE.findall(svg)).lower()
+    return any(phrase in labels for phrase in _PLACEHOLDER_PHRASES)
+
+
+def _screen_svg(svg: str) -> tuple[str, str]:
+    """(svg to send, diagram_status) for one visualizer output."""
+    if not _svg_is_valid(svg):
+        return "", "visualizer_failed"
+    if _is_placeholder_svg(svg):
+        logger.warning("visualizer returned a placeholder diagram; not sending it")
+        return "", "suppressed_placeholder"
+    return svg, "drawn"
 
 
 def _format_history(conversation_history: list,
@@ -1963,11 +2228,13 @@ def _svg_is_valid(svg: str) -> bool:
     return bool(s) and s.startswith("<svg") and s.endswith("</svg>")
 
 
-def _diagram_status(svg_ok: bool) -> dict:
+def _diagram_status(svg_ok: bool, status: str | None = None) -> dict:
     """Placeholder passed to the conversationalist instead of raw SVG markup,
     so its reply can't echo the diagram code (and burn its max_tokens budget
-    on it). It only needs to know whether a diagram was rendered."""
-    return {"diagram_rendered": bool(svg_ok)}
+    on it). It only needs to know whether a diagram was rendered, and if not,
+    why (CONVERSATIONALIST_PROMPT's DIAGRAM HONESTY rule)."""
+    return {"diagram_rendered": bool(svg_ok),
+            "diagram_status": status or ("drawn" if svg_ok else "not_drawn")}
 
 
 # --- Hint ladder (pilot item 7) ---------------------------------------------
@@ -2154,26 +2421,3 @@ def _parse_json(text: str) -> dict:
     logger.warning("Agent returned unparseable JSON (%s). First 200 chars: %r",
                    reason, snippet)
     return {"parse_error": reason, "raw_response": text}
-    
-    
-    
-def _find_recent_created(conversation_history: list) -> list:
-    """Look back through recent assistant turns for created practice problems.
-    The conversationalist rendered them as text, but we re-parse from the last
-    few turns by re-detecting problem statements. Returns a list of {'statement': ...}.
-    Best-effort: if nothing structured is found, returns []."""
-    # We stored created problems only in-message; reconstruct from the last
-    # assistant message that looks like generated problems.
-    for msg in reversed(conversation_history[-6:]):
-        if msg.get("role") in ("assistant", "ai"):
-            content = msg.get("content", "")
-            # crude split: each "version" or numbered problem becomes one statement
-            chunks = []
-            for line in content.split("\n"):
-                line = line.strip()
-                if line and not line.lower().startswith(("given:", "find:", "here")):
-                    chunks.append(line)
-            if chunks:
-                # group into problem-sized statements (join, then split on blank markers)
-                return [{"statement": c} for c in chunks if len(c) > 40][:3]
-    return []

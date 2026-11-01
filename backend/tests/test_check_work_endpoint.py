@@ -20,7 +20,7 @@ from conftest import FakeResponse, FakeTextBlock  # noqa: E402
 
 PARSED = {
     "family": "kinetics",
-    "scenario": {"gravity": 9.81},
+    "scenario": {"bodies": [{"label": "A", "kind": "particle", "mass_kg": 10}], "gravity": 9.81},
     "givens": [
         {"symbol": "m", "value": 10, "unit": "kg"},
         {"symbol": "theta", "value": 30, "unit": "deg"},

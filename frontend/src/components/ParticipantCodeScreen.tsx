@@ -60,7 +60,7 @@ export default function ParticipantCodeScreen({ apiBase, notice, onAccepted }: {
           className="clm-gate-input"
           value={code}
           onChange={e => setCode(e.target.value)}
-          placeholder="e.g. P07"
+          placeholder="e.g. Eagle1234"
           autoComplete="off"
           autoCapitalize="characters"
           spellCheck={false}

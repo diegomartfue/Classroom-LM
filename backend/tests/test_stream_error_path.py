@@ -22,7 +22,8 @@ def _consume(resp):
 def test_stream_error_is_generic_and_logged(monkeypatch, caplog):
     class FailingAgent:
         def run_stream(self, message, conversation_history, student_model, source_text,
-                       session_id=None, student_id=None, hint_level=None):
+                       session_id=None, student_id=None, hint_level=None,
+                       active_problem=None):
             raise RuntimeError("SECRET internal detail: content[0].text boom")
             yield {}  # unreachable; marks this function a generator
 

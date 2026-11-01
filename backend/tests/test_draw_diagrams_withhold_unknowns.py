@@ -34,7 +34,8 @@ class RecordingDrawClient:
         if system is o.ROUTER_PROMPT:
             return json.dumps({"route": "DRAW", "rationale": "x", "confidence": 0.9})
         if system is o.INPUT_PARSER_PROMPT:
-            return json.dumps({"body_description": "ladder against a wall", "is_in_scope": True})
+            return json.dumps({"body_description": "ladder against a wall", "is_in_scope": True,
+                               "scenario": {"bodies": [{"label": "L", "kind": "rigid_body"}]}})
         if system is o.VISUALIZER_PROMPT:
             return VALID_SVG
         if system is o.CONVERSATIONALIST_PROMPT:
