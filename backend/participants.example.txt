@@ -1,0 +1,8 @@
+# Pilot participant codes, one per line. Copy to participants.txt (gitignored)
+# on the server. Only codes listed here (or in PILOT_PARTICIPANT_CODES) can use
+# the tutor. Codes are case-insensitive; letters, digits and '-' only.
+#
+# Short sequential codes like P01..P10 are easy to guess. Anyone who guesses
+# one can use the tutor and the API key, so prefer a random suffix:
+P01-K7QX
+P02-M3TD

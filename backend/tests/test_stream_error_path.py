@@ -4,18 +4,8 @@ ADDITIONAL FINDING #2 — /tutor/stream error observability.
 On an unexpected exception the frontend must get a SAFE, generic SSE error
 (no stack trace, no raw exception detail), while the server logs the failure.
 """
-import sys
-import types
 import asyncio
 import logging
-
-# Shim the heavy rag_pipeline (chromadb) so `import main` works in CI/offline.
-# main only uses ingest_document/query_rag from it, which this test never calls.
-if "rag_pipeline" not in sys.modules:
-    _fake = types.ModuleType("rag_pipeline")
-    _fake.ingest_document = lambda *a, **k: {}
-    _fake.query_rag = lambda *a, **k: {}
-    sys.modules["rag_pipeline"] = _fake
 
 import main  # noqa: E402
 
@@ -31,7 +21,9 @@ def _consume(resp):
 
 def test_stream_error_is_generic_and_logged(monkeypatch, caplog):
     class FailingAgent:
-        def run_stream(self, message, conversation_history, student_model, source_text):
+        def run_stream(self, message, conversation_history, student_model, source_text,
+                       session_id=None, student_id=None, hint_level=None,
+                       active_problem=None):
             raise RuntimeError("SECRET internal detail: content[0].text boom")
             yield {}  # unreachable; marks this function a generator
 
@@ -39,7 +31,7 @@ def test_stream_error_is_generic_and_logged(monkeypatch, caplog):
 
     req = main.TutorRequest(message="hi", conversation_history=[],
                             student_model={}, doc_ids=[])
-    resp = main.tutor_stream_endpoint(req)
+    resp = main.tutor_stream_endpoint(req, code="P01")
 
     with caplog.at_level(logging.ERROR):
         body = "".join(_consume(resp))

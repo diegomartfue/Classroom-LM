@@ -84,21 +84,6 @@ def test_conversationalist():
     )
     print(result)
 
-def test_diagram_renderer():
-    print("\n=== DIAGRAM RENDERER ===")
-    solution = agent.solver(test_parsed_input)
-    validation = agent.validator(test_parsed_input, solution)
-    visualization = agent.visualizer(test_parsed_input, validation)
-    diagram_b64 = agent.diagram_renderer(visualization, solution)
-
-    if not diagram_b64:
-        print("❌ Failed to generate diagram")
-        return
-
-    import base64
-    with open("test_diagram.png", "wb") as f:
-        f.write(base64.b64decode(diagram_b64))
-    print(f"✅ Saved to test_diagram.png ({len(diagram_b64)} chars base64)")
 # ============= RUN =============
 tests = {
     "parser": test_input_parser,
@@ -108,7 +93,6 @@ tests = {
     "validator": test_validator,
     "visualizer": test_visualizer,
     "conversationalist": test_conversationalist,
-    "diagram": test_diagram_renderer,
 }
 
 if __name__ == "__main__":

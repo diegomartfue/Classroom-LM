@@ -1,9 +1,6 @@
 anthropic>=0.40.0,<1.0.0
-chromadb
 fastapi
-langchain-text-splitters
 matplotlib
-numpy
 pint
 pydantic
 pypdf

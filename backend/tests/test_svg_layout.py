@@ -379,20 +379,106 @@ def test_straight_only_path_incline_behaves_like_the_equivalent_polygon():
     assert out != svg
 
 
-def test_curved_path_still_uses_the_bbox_fallback(caplog):
-    # An arc/curve command makes the path not cheaply segmentable, so it
-    # keeps the old (coarser) bounding-box treatment — this confirms that
-    # path is still detected as a collision candidate at all (its bbox
-    # fallback swallows too much room here for any candidate to clear it,
-    # same as before this fix — curved paths were never the bug), i.e. the
-    # straight-only fast path didn't silently stop detecting curved ones.
+def test_label_under_an_arc_but_not_touching_it_is_left_alone():
+    # Semicircle of radius 100 through (200, 200); the label sits under the
+    # dome, ~70px from the curve. The old padded-box fallback called this a
+    # collision; the sampled arc correctly doesn't.
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">'
         '<path d="M100,300 A100,100 0 0 1 300,300" stroke="black" fill="none"/>'
-        '<text x="180" y="290" font-size="13">on the arc</text>'
+        '<text x="180" y="290" font-size="13">under the arc</text>'
         "</svg>"
     )
-    with caplog.at_level(logging.DEBUG, logger="agents.svg_layout"):
-        out = fix_label_collisions(svg)
-    assert out == svg
-    assert any("on the arc" in r.message for r in caplog.records)
+    assert fix_label_collisions(svg) == svg
+
+
+def test_label_crossing_an_arc_is_moved_off_it():
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">'
+        '<path d="M100,300 A100,100 0 0 1 300,300" stroke="black" fill="none"/>'
+        '<text x="180" y="206" font-size="13">on the arc</text>'
+        "</svg>"
+    )
+    out = fix_label_collisions(svg)
+    assert out != svg
+    [el] = _texts(out)
+    x, y = _xy(el)
+    assert ((x - 180) ** 2 + (y - 206) ** 2) ** 0.5 <= 40.0 + 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Browser-test report: "W = mg = 98.1 N" and "θ = 30°" touching an incline's
+# sloped edge. θ sits in the corner between its angle arc and the slope; the
+# arc used to be a box padded by its radius around both endpoints, which
+# covered every spot within 40px, so the label was always left in place.
+# ---------------------------------------------------------------------------
+
+_TAN30 = 0.5773502691896258
+_INCLINE_TOP = 340 - 440 * _TAN30
+_INCLINE = (
+    f'<polygon points="80,{_INCLINE_TOP:.1f} 80,340 520,340" fill="#f2f2f2" stroke="#333"/>'
+    '<path d="M 470 340 A 50 50 0 0 1 476.7 315" fill="none" stroke="#333"/>'
+)
+_INCLINE_SEGMENTS = _closed_segments([(80.0, _INCLINE_TOP), (80.0, 340.0), (520.0, 340.0)])
+
+
+def _clear_of_incline(el) -> bool:
+    bbox = _inflate(_text_bbox(el), 4.0)
+    return not any(_segment_intersects_rect(a, b, bbox) for a, b in _INCLINE_SEGMENTS)
+
+
+def test_incline_labels_from_bug_report_are_moved_clear_of_the_slope():
+    slope_y = lambda x: 340 - (520 - x) * _TAN30  # noqa: E731
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">' + _INCLINE +
+        f'<text x="308" y="{slope_y(308) - 2:.1f}" font-size="14">W = mg = 98.1 N</text>'
+        '<text x="438" y="333" font-size="14">θ = 30°</text>'
+        "</svg>"
+    )
+    before = _texts(svg)
+    assert not any(_clear_of_incline(el) for el in before)  # both really touch
+    out = fix_label_collisions(svg)
+    for el, orig in zip(_texts(out), before):
+        assert _clear_of_incline(el), el.text
+        x, y = _xy(el)
+        ox, oy = _xy(orig)
+        assert ((x - ox) ** 2 + (y - oy) ** 2) ** 0.5 <= 40.0 + 1e-6
+
+
+def test_translated_group_is_measured_in_canvas_coordinates():
+    # Label at canvas (300, 276) via translate — clear of everything. It
+    # used to be measured at (0, 46), "outside the margin", and shoved 88px.
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">'
+        '<g transform="translate(300,230)">'
+        '<text x="0" y="46" font-size="14" text-anchor="middle">W = 98.1 N</text>'
+        "</g></svg>"
+    )
+    assert fix_label_collisions(svg) == svg
+
+
+def test_translated_geometry_still_collides():
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">'
+        '<g transform="translate(100, 0)"><line x1="100" y1="100" x2="100" y2="300" stroke="black"/></g>'
+        '<text x="190" y="200" font-size="14">T = 40 N</text>'
+        "</svg>"
+    )
+    assert fix_label_collisions(svg) != svg
+
+
+def test_font_size_is_inherited_from_group_and_style():
+    el = ET.fromstring('<text x="0" y="100">abcdefghij</text>')
+    assert _text_bbox(el, font_size=10.0)[2] == pytest.approx(55.0)
+    styled = ET.fromstring('<text x="0" y="100" style="fill:red; font-size: 20px">abcdefghij</text>')
+    assert _text_bbox(styled, font_size=10.0)[2] == pytest.approx(110.0)
+
+
+def test_rotated_group_is_left_untouched():
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">'
+        '<line x1="0" y1="200" x2="600" y2="200" stroke="black"/>'
+        '<g transform="rotate(-30 300 200)"><text x="300" y="200" font-size="14">f_k</text></g>'
+        "</svg>"
+    )
+    assert fix_label_collisions(svg) == svg

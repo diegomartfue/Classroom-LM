@@ -21,13 +21,14 @@ Student → Frontend (ClassroomLM.tsx) → POST /tutor → OrchestratorAgent.run
 High-level component map:
 
 - **`backend/main.py`** — FastAPI app and endpoints.
-- **`backend/agents/orchestrator.py`** — the 12-agent orchestrator (`run`, `run_stream`).
+- **`backend/agents/orchestrator.py`** — the 11-agent orchestrator (`run`, `run_stream`).
 - **`backend/agents/fbd_renderer.py`** — deterministic matplotlib renderer (`render_fbd`, `render_schematic`, `stack_images_vertical`).
 - **`backend/tools/`** — SymPy/pint verification helpers (not yet wired into the pipeline; see below).
-- **`backend/claude_client.py`, `sympy_solver.py`, `rag_pipeline.py`** — support the legacy `/chat`, `/query`, and `/upload` paths.
+- **`backend/document_store.py`** — course-file uploads (professor-shared and participant-private) behind `/documents`.
+- **`backend/claude_client.py`, `sympy_solver.py`** — support the legacy `/chat` path.
 - **`frontend/src/components/ClassroomLM.tsx`** — the live chat UI.
 
-## The 12-Agent Pipeline
+## The 11-Agent Pipeline
 
 Every `/tutor` turn begins with a single cheap **Router** call. The Router
 classifies the student's latest message into exactly one route, and the route
@@ -79,7 +80,6 @@ agents (Pedagogical Planner, Visualizer, Creator) use Opus; the rest use Sonnet.
 | **Validator** | claude-sonnet-4-6 | 0 | Parsed problem + solver solution | Verdict JSON (independent re-derivation, equilibrium checks, PASS/FAIL/UNCERTAIN) |
 | **Visualizer** | claude-opus-4-7 | 0 | Parsed problem + solution | Structured FBD spec JSON (body, supports, reactions, applied loads) |
 | **Schematic Layout** | claude-sonnet-4-6 | 0.2 | Parsed problem + solution | JSON drawing primitives for multi-body schematics (FBD-renderer fallback) |
-| **Diagram Renderer** | claude-sonnet-4-6 | 0 | Visualizer output + solution | Executable matplotlib code → base64 PNG (used on the streaming path) |
 | **Conversationalist** | claude-sonnet-4-6 | 0.5 | Full context bundle (message, parsed input, student model, plan, solution, validation, visualization) | Student-facing prose reply |
 
 ### Diagram rendering
@@ -87,9 +87,7 @@ agents (Pedagogical Planner, Visualizer, Creator) use Opus; the rest use Sonnet.
 On the `SOLVE` branch, the orchestrator first tries the **deterministic**
 renderer: `render_fbd(visualizer_spec)`. If that returns empty (e.g., a
 multi-body mechanism the single-body FBD renderer can't draw), it falls back to
-`schematic_layout` → `render_schematic(layout)`. The LLM-based **Diagram
-Renderer** agent (which generates and `exec`s matplotlib code) is retained for
-the streaming path (`run_stream`) but is not on the primary `run()` SOLVE branch.
+`schematic_layout` → `render_schematic(layout)`.
 
 ## Tools (`backend/tools/`) — intended role, not yet wired in
 
@@ -125,21 +123,18 @@ prompt-dependent.
 | GET | `/health` | Reports whether `ANTHROPIC_API_KEY` is configured. |
 | POST | `/chat` | Legacy path: `sympy_solver.extract_and_solve` runs first, its verified result is injected into the prompt, then `claude_client.chat` replies. |
 | POST | `/interpret` | Upload an image / PDF / DOCX; Claude vision/text extraction returns equations and diagrams as plain text. |
-| POST | `/upload` | Ingest a PDF into ChromaDB via `rag_pipeline.ingest_document`. |
-| POST | `/query` | RAG query over ingested course materials (top-3 chunks → Claude). |
-| POST | `/tutor` | Primary endpoint: runs `OrchestratorAgent.run()` and returns the reply, the routing decision, the updated student model, an optional base64 FBD image, and full pipeline metadata. |
+| POST | `/tutor/stream` | What the chat UI calls: the same pipeline as `/tutor`, streamed as server-sent events. |
+| POST/GET/DELETE | `/documents`, `/documents/{doc_id}`, `/documents/summarize`, `/documents/quiz` | Course-file upload, listing, deletion, summaries and quizzes via `document_store.py`. |
+| POST | `/tutor` | Non-streaming endpoint: runs `OrchestratorAgent.run()` and returns the reply, the routing decision, the updated student model, an optional base64 FBD image, and full pipeline metadata. |
 
 ## Frontend Architecture (`frontend/src/`)
 
-- **Entry / routing.** `App.tsx` mounts `ClassroomLM` directly. (The role-based
-  `MainLayout` + `sections/` structure and `AuthContext` roles exist in the
-  codebase but are not currently mounted by `App.tsx`.)
+- **Entry / routing.** `App.tsx` mounts `ClassroomLM` directly (plus the toast
+  `Toaster`). There is no router.
 - **Live component.** `components/ClassroomLM.tsx` is the UTEP-themed chat UI. It
-  posts to `${API_BASE}/tutor` (`API_BASE` defaults to `http://localhost:8000`)
-  and uploads course files to `/upload`. Markdown replies are rendered with
+  posts to `${API_BASE}/tutor/stream` (`API_BASE` defaults to `http://localhost:8000`)
+  and uploads course files to `/documents`. Markdown replies are rendered with
   `react-markdown`; returned FBD images are shown inline.
-- **Legacy context.** `contexts/AppContext.tsx` still contains
-  `simulateAITutorResponse`, which targets `/chat`; the live UI does not use it.
 - **UI kit.** shadcn/ui components (Radix + Tailwind) live in `components/ui/`.
 
 ## DRAW pipeline: history gating and label-collision fixing
@@ -200,10 +195,9 @@ the deterministic backstop, wired into `visualizer()` right before it
 returns on the success path (wrapped in try/except — this pass must never
 break a diagram it was only supposed to improve):
 
-1. Parse with `xml.etree.ElementTree` (stdlib) — not `lxml`. Both are
-   importable in the dev venv, but `lxml` is not declared in
-   `backend/requirements.txt`; it's a transitive dependency of another
-   package, not something this codebase can rely on staying installed.
+1. Parse with `xml.etree.ElementTree` (stdlib) — not `lxml`, which is not
+   declared in `backend/requirements.txt` (it's only installed transitively,
+   via python-docx).
 2. Estimate every `<text>` element's bounding box from a fixed heuristic —
    `0.55 * font_size * len(text)` wide, `1.2 * font_size` tall, adjusted for
    `text-anchor` and `dominant-baseline` — rather than measuring real glyphs
